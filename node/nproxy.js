@@ -49,12 +49,12 @@ function createTextProcessor(mode) {
     };
   }
   if (mode === 'transform') {
-    // Full transform mode: strip ANSI + normalize unicode
+    // Full transform mode: strip ANSI + normalize unicode (NFC)
     const ansiRe = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
     const oscRe = /\x1b\]8;.*?(?:\x07|\x1b\\)/g;
     return (chunk) => {
       if (typeof chunk === 'string') {
-        return chunk.replace(oscRe, '').replace(ansiRe, '');
+        return chunk.replace(oscRe, '').replace(ansiRe, '').normalize('NFC');
       }
       return chunk;
     };
@@ -107,35 +107,63 @@ function intercept() {
   const textMode = process.env.NPROXY_TEXT || 'passthrough';
   const processText = createTextProcessor(textMode);
 
-  // Wrap stdout.write
-  const origStdoutWrite = process.stdout.write.bind(process.stdout);
-  let stdoutPaused = false;
+  // Chunk size limit per write (0 = no limit)
+  let maxChunkBytes = 0;
+  const MAX_CHUNK_NORMAL = 0;       // no limit
+  const MAX_CHUNK_PRESSURE = 65536; // 64KB
+  const MAX_CHUNK_CRITICAL = 4096;  // 4KB
 
+  // Split a buffer/string into maxChunkBytes-sized pieces
+  function splitChunk(data) {
+    if (!maxChunkBytes || data.length <= maxChunkBytes) return [data];
+    const parts = [];
+    for (let i = 0; i < data.length; i += maxChunkBytes) {
+      parts.push(data.slice(i, i + maxChunkBytes));
+    }
+    return parts;
+  }
+
+  // Wrap stdout.write with chunk splitting
+  const origStdoutWrite = process.stdout.write.bind(process.stdout);
   process.stdout.write = function (chunk, encoding, callback) {
     if (typeof chunk === 'string' || chunk instanceof Buffer) {
       const processed = processText(chunk);
-      return origStdoutWrite(processed, encoding, callback);
+      const parts = splitChunk(processed);
+      for (let i = 0; i < parts.length; i++) {
+        const cb = i === parts.length - 1 ? callback : undefined;
+        origStdoutWrite(parts[i], encoding, cb);
+      }
+      return true;
     }
     return origStdoutWrite(chunk, encoding, callback);
   };
 
-  // Wrap stderr.write
+  // Wrap stderr.write with chunk splitting
   const origStderrWrite = process.stderr.write.bind(process.stderr);
   process.stderr.write = function (chunk, encoding, callback) {
     if (typeof chunk === 'string' || chunk instanceof Buffer) {
       const processed = processText(chunk);
-      return origStderrWrite(processed, encoding, callback);
+      const parts = splitChunk(processed);
+      for (let i = 0; i < parts.length; i++) {
+        const cb = i === parts.length - 1 ? callback : undefined;
+        origStderrWrite(parts[i], encoding, cb);
+      }
+      return true;
     }
     return origStderrWrite(chunk, encoding, callback);
   };
 
-  // Memory monitor — on pressure, adjust hwm to reduce V8 Segmenter load
+  // Memory monitor — on pressure, reduce chunk size to limit V8 Segmenter load
   const monitor = new MemoryMonitor({
     onTransition: (state, heapMb) => {
       if (state === 'pressure') {
-        process.stderr.write(`[nproxy] memory pressure: ${heapMb}MB — reducing output chunk size\n`);
+        maxChunkBytes = MAX_CHUNK_PRESSURE;
+        process.stderr.write(`[nproxy] memory pressure: ${heapMb}MB — limiting chunk to 64KB\n`);
       } else if (state === 'critical') {
-        process.stderr.write(`[nproxy] critical memory: ${heapMb}MB — passthrough only\n`);
+        maxChunkBytes = MAX_CHUNK_CRITICAL;
+        process.stderr.write(`[nproxy] critical memory: ${heapMb}MB — limiting chunk to 4KB\n`);
+      } else {
+        maxChunkBytes = MAX_CHUNK_NORMAL;
       }
     },
   });

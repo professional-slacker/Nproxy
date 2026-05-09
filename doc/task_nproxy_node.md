@@ -67,15 +67,16 @@ if (require.main === module) {
   - [x] stderr.write ラップ + テキスト処理
 - [x] 基本テスト (echo アプリで動作確認)
 
-### Phase 2: メモリ監視
-- [ ] `process.memoryUsage()` 定期監視
-- [ ] 状態遷移と通知
-- [ ] chunk サイズ制御
+### Phase 2: メモリ監視 (完了)
+- [x] `process.memoryUsage()` 定期監視
+- [x] 状態遷移と通知 (normal → pressure → critical)
+- [x] MemoryMonitor クラス実装
 
 ### Phase 3: テキスト変換
-- [ ] ANSI strip
-- [ ] UTF-8 正規化
-- [ ] 環境変数制御
+- [x] ANSI strip
+- [ ] UTF-8 正規化 (NFC/NFD)
+- [x] 環境変数制御 (NPROXY_TEXT)
+- [ ] chunk 分割制御 (メモリ状態に応じて chunk サイズ調整)
 
 ### Phase 4: テスト・リリース
 - [x] `-r` モードのテスト (echo アプリで動作確認)
