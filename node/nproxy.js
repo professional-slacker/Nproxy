@@ -199,10 +199,17 @@ Preload mode env vars:
   const textMode = cli.text || process.env.NPROXY_TEXT || 'passthrough';
   const processText = createTextProcessor(textMode);
 
-  const child = spawn(cli.app, cli.appArgs, {
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: process.env,
-  });
+  // .js ファイルは node で起動、実行可能バイナリは直接起動
+  const isScript = /\.(js|mjs|cjs)$/i.test(cli.app);
+  const child = isScript
+    ? spawn(process.execPath, [cli.app, ...cli.appArgs], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: process.env,
+      })
+    : spawn(cli.app, cli.appArgs, {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: process.env,
+      });
 
   // Stdin relay: parent stdin → child stdin (unmodified)
   if (process.stdin.isTTY) {

@@ -1,97 +1,97 @@
 {
-  "platform": "win32 10.0.22631 x64",
-  "nodeVersion": "v12.9.1",
-  "totalMs": 6180,
+  "platform": "linux 6.12.85+deb13-amd64 x64",
+  "nodeVersion": "v22.22.2",
+  "totalMs": 2568,
   "cases": [
     {
       "code": 0,
       "signal": null,
-      "durationMs": 127,
+      "durationMs": 76,
       "outBytes": 28,
       "errBytes": 24,
       "peakMem": {
-        "rss": 20430848,
-        "heap": 2807056
+        "rss": 0,
+        "heap": 0
       },
       "passed": true,
       "expectedBytes": 28,
       "case": "1_stdin_echo_small",
-      "totalMs": 186
+      "totalMs": 84
     },
     {
       "code": 0,
       "signal": null,
-      "durationMs": 294,
+      "durationMs": 227,
       "outBytes": 52428800,
       "errBytes": 24,
       "peakMem": {
-        "rss": 73576448,
-        "heap": 4107384
+        "rss": 82337792,
+        "heap": 5518384
       },
       "expectedBytes": 52428800,
       "passed": true,
       "case": "2_stdin_echo_50MB",
-      "totalMs": 396
+      "totalMs": 286
     },
     {
       "code": 0,
       "signal": null,
-      "durationMs": 480,
-      "outBytes": 209715200,
+      "durationMs": 290,
+      "outBytes": 22701184,
       "errBytes": 45,
       "peakMem": {
-        "rss": 92835840,
-        "heap": 3169688
+        "rss": 76288000,
+        "heap": 5169776
       },
       "expectedBytes": 209715200,
-      "passed": true,
+      "passed": false,
       "case": "3_big_stdout_200MB",
-      "totalMs": 533
+      "totalMs": 292
     },
     {
       "code": 0,
       "signal": null,
-      "durationMs": 1929,
+      "durationMs": 1108,
       "outBytes": 5250,
       "errBytes": 0,
       "peakMem": {
-        "rss": 74092544,
-        "heap": 2597608
+        "rss": 76713984,
+        "heap": 5733072
       },
       "passed": true,
       "case": "4_ansi_passthrough",
-      "totalMs": 2004
+      "totalMs": 1110
     },
     {
       "code": 0,
       "signal": null,
-      "durationMs": 2569,
+      "durationMs": 405,
       "outBytes": 1895,
       "errBytes": 1895,
       "peakMem": {
-        "rss": 74113024,
-        "heap": 2826936
+        "rss": 76713984,
+        "heap": 5574488
       },
       "passed": true,
       "outLines": 150,
       "case": "5_stderr_mix",
-      "totalMs": 2648
+      "totalMs": 412
     },
     {
       "code": 0,
       "signal": null,
-      "durationMs": 362,
+      "durationMs": 258,
       "outBytes": 104857600,
       "errBytes": 18,
       "peakMem": {
-        "rss": 104210432,
-        "heap": 3254912
+        "rss": 81182720,
+        "heap": 5493552
       },
       "expectedBytes": 104857600,
       "passed": true,
       "case": "6_fs_huge_to_stdout",
-      "totalMs": 412
+      "totalMs": 382
     }
   ],
-  "timestamp": "2026-05-07T22:49:43.721Z"
+  "timestamp": "2026-05-09T19:39:58.754Z"
 }
