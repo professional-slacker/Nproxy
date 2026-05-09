@@ -60,13 +60,12 @@ if (require.main === module) {
 
 ## TODO
 
-### Phase 1: intercept コア
-- [ ] `-r` モード検出
-- [ ] `intercept()` の実装
-  - [ ] stdin readable の chunk 読み
-  - [ ] stdout.write ラップ
-  - [ ] stderr.write ラップ
-- [ ] 基本テスト (echo アプリで動作確認)
+### Phase 1: intercept コア (完了)
+- [x] `-r` モード検出 (require.main === module)
+- [x] `intercept()` の実装
+  - [x] stdout.write ラップ + テキスト処理
+  - [x] stderr.write ラップ + テキスト処理
+- [x] 基本テスト (echo アプリで動作確認)
 
 ### Phase 2: メモリ監視
 - [ ] `process.memoryUsage()` 定期監視
@@ -79,9 +78,28 @@ if (require.main === module) {
 - [ ] 環境変数制御
 
 ### Phase 4: テスト・リリース
-- [ ] `-r` モードのテスト
+- [x] `-r` モードのテスト (echo アプリで動作確認)
 - [ ] 既存 sub spawn モードの回帰テスト
 - [ ] ドキュメント更新
+
+## テスト手順
+
+### Preload モード (`-r`)
+```bash
+# 基本動作
+echo "hello" | NPROXY_AUTO=1 node -r ./node/nproxy.js node node/test_apps/app_echo.js
+
+# ANSI strip
+NPROXY_TEXT=strip-ansi NPROXY_AUTO=1 node -r ./node/nproxy.js openclaude
+
+# 生の OpenClaude (インターセプトなしで起動確認)
+node openclaude
+```
+
+### CLI mode (子 spawn)
+```bash
+# passthrough
+echo "test" | node node/nproxy.js --text=passthrough node node/test_apps/app_echo.js
 
 ## ファイル構成 (変更後)
 ```
