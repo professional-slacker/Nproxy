@@ -1,12 +1,12 @@
 {
   "platform": "linux 6.12.85+deb13-amd64 x64",
   "nodeVersion": "v22.22.2",
-  "totalMs": 2568,
+  "totalMs": 31065,
   "cases": [
     {
       "code": 0,
       "signal": null,
-      "durationMs": 76,
+      "durationMs": 80,
       "outBytes": 28,
       "errBytes": 24,
       "peakMem": {
@@ -16,82 +16,98 @@
       "passed": true,
       "expectedBytes": 28,
       "case": "1_stdin_echo_small",
-      "totalMs": 84
+      "totalMs": 87
     },
     {
       "code": 0,
       "signal": null,
-      "durationMs": 227,
+      "durationMs": 216,
       "outBytes": 52428800,
       "errBytes": 24,
       "peakMem": {
-        "rss": 82337792,
-        "heap": 5518384
+        "rss": 77725696,
+        "heap": 5284592
       },
       "expectedBytes": 52428800,
       "passed": true,
       "case": "2_stdin_echo_50MB",
-      "totalMs": 286
+      "totalMs": 267
     },
     {
       "code": 0,
       "signal": null,
-      "durationMs": 290,
-      "outBytes": 22701184,
+      "durationMs": 364,
+      "outBytes": 209715200,
       "errBytes": 45,
       "peakMem": {
-        "rss": 76288000,
-        "heap": 5169776
+        "rss": 82640896,
+        "heap": 5533408
       },
       "expectedBytes": 209715200,
-      "passed": false,
+      "passed": true,
       "case": "3_big_stdout_200MB",
-      "totalMs": 292
+      "totalMs": 367
     },
     {
       "code": 0,
       "signal": null,
-      "durationMs": 1108,
+      "durationMs": 28037,
+      "outBytes": 10737418240,
+      "errBytes": 47,
+      "peakMem": {
+        "rss": 90865664,
+        "heap": 6197488
+      },
+      "expectedBytes": 10737418240,
+      "passed": true,
+      "throughputMBs": "365.2",
+      "case": "7_big_stdout_10GB",
+      "totalMs": 28040
+    },
+    {
+      "code": 0,
+      "signal": null,
+      "durationMs": 1189,
       "outBytes": 5250,
       "errBytes": 0,
       "peakMem": {
-        "rss": 76713984,
-        "heap": 5733072
+        "rss": 78528512,
+        "heap": 5112416
       },
       "passed": true,
       "case": "4_ansi_passthrough",
-      "totalMs": 1110
+      "totalMs": 1207
     },
     {
       "code": 0,
       "signal": null,
-      "durationMs": 405,
+      "durationMs": 426,
       "outBytes": 1895,
       "errBytes": 1895,
       "peakMem": {
-        "rss": 76713984,
-        "heap": 5574488
+        "rss": 78528512,
+        "heap": 5558248
       },
       "passed": true,
       "outLines": 150,
       "case": "5_stderr_mix",
-      "totalMs": 412
+      "totalMs": 429
     },
     {
       "code": 0,
       "signal": null,
-      "durationMs": 258,
+      "durationMs": 662,
       "outBytes": 104857600,
       "errBytes": 18,
       "peakMem": {
-        "rss": 81182720,
-        "heap": 5493552
+        "rss": 91119616,
+        "heap": 5746640
       },
       "expectedBytes": 104857600,
       "passed": true,
       "case": "6_fs_huge_to_stdout",
-      "totalMs": 382
+      "totalMs": 667
     }
   ],
-  "timestamp": "2026-05-09T19:39:58.754Z"
+  "timestamp": "2026-05-09T19:43:16.613Z"
 }

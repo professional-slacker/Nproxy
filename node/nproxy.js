@@ -220,17 +220,38 @@ Preload mode env vars:
   });
   process.stdin.on('end', () => child.stdin.end());
 
-  // Stdout relay: child stdout → parent stdout (with optional text processing)
+  // Stdout relay: child stdout → parent stdout (with backpressure handling)
+  child.stdout.pause();
+  let writePending = false;
   child.stdout.on('data', (chunk) => {
     const processed = processText(chunk);
-    if (processed.length > 0) process.stdout.write(processed);
+    if (processed.length === 0) return;
+    writePending = true;
+    const ok = process.stdout.write(processed);
+    if (!ok) {
+      child.stdout.pause();
+      process.stdout.once('drain', () => {
+        writePending = false;
+        child.stdout.resume();
+      });
+    } else {
+      writePending = false;
+    }
   });
+  child.stdout.resume();
 
-  // Stderr relay: child stderr → parent stderr
+  // Stderr relay: child stderr → parent stderr (with backpressure handling)
+  child.stderr.pause();
   child.stderr.on('data', (chunk) => {
     const processed = processText(chunk);
-    if (processed.length > 0) process.stderr.write(processed);
+    if (processed.length === 0) return;
+    const ok = process.stderr.write(processed);
+    if (!ok) {
+      child.stderr.pause();
+      process.stderr.once('drain', () => { child.stderr.resume(); });
+    }
   });
+  child.stderr.resume();
 
   // Signal relay
   const signals = ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGUSR1', 'SIGUSR2', 'SIGWINCH'];

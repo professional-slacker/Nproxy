@@ -158,6 +158,22 @@ async function runCase(name, fn) {
     return r;
   });
 
+  // -------------------- Case 7: 10GB 大容量 stdout (backpressure + stability) ---
+  await runCase('7_big_stdout_10GB', async () => {
+    const outFile = path.join(TMP_DIR, 'big_stdout_10gb.out.bin');
+    const start = Date.now();
+    const r = await nodeRun([NPROXY, path.join(APPS_DIR, 'app_big_stdout.js'), '10240'], {
+      stdoutFile: outFile,
+      timeoutMs: 600000,
+    });
+    const expected = 10 * 1024 * 1024 * 1024; // 10GB
+    r.expectedBytes = expected;
+    const actualSize = fs.statSync(outFile).size;
+    r.passed = Math.abs(actualSize - expected) < 64 * 1024;
+    r.throughputMBs = ((actualSize / (1024 * 1024)) / ((Date.now() - start) / 1000)).toFixed(1);
+    return r;
+  });
+
   // -------------------- Case 4: ANSI escape passthrough --------------------
   await runCase('4_ansi_passthrough', async () => {
     const outFile = path.join(TMP_DIR, 'ansi.out.txt');
