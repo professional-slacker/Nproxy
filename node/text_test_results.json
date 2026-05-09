@@ -1,0 +1,415 @@
+{
+  "platform": "win32 10.0.22631 x64",
+  "nodeVersion": "v12.9.1",
+  "totalMs": 18371,
+  "cases": [
+    {
+      "code": 0,
+      "signal": null,
+      "durationMs": 430,
+      "outBytes": 104857600,
+      "errBytes": 45,
+      "hash": "643294a11178cae31d85491cb30ba65816a5afc68ed82fea34c764971b833e6f",
+      "expectedBytes": 104857600,
+      "passed": true,
+      "tick": {
+        "samples": 0,
+        "heapMin": null,
+        "heapMax": null,
+        "heapAvg": 0,
+        "rssMin": null,
+        "rssMax": null,
+        "rssAvg": 0,
+        "states": [],
+        "textModes": [],
+        "transitions": [],
+        "textTransitions": [
+          {
+            "kind": "stdout",
+            "from": "off",
+            "to": "passthrough",
+            "reason": "init"
+          },
+          {
+            "kind": "stderr",
+            "from": "off",
+            "to": "passthrough",
+            "reason": "init"
+          },
+          {
+            "kind": "stdout",
+            "from": "off",
+            "to": "passthrough",
+            "reason": "init"
+          },
+          {
+            "kind": "stderr",
+            "from": "off",
+            "to": "passthrough",
+            "reason": "init"
+          },
+          {
+            "kind": "stdout",
+            "from": "off",
+            "to": "passthrough",
+            "reason": "init"
+          },
+          {
+            "kind": "stderr",
+            "from": "off",
+            "to": "passthrough",
+            "reason": "init"
+          }
+        ]
+      },
+      "case": "T1_ascii_passthrough_100MB",
+      "totalMs": 486
+    },
+    {
+      "code": 0,
+      "signal": null,
+      "durationMs": 6186,
+      "outBytes": 165478400,
+      "errBytes": 82,
+      "hash": null,
+      "expectedLines": 1638400,
+      "passed": true,
+      "tick": {
+        "samples": 12,
+        "heapMin": 10.1,
+        "heapMax": 22.2,
+        "heapAvg": 15.116666666666665,
+        "rssMin": 45.1,
+        "rssMax": 75.4,
+        "rssAvg": 65.84166666666665,
+        "states": [
+          "NORMAL"
+        ],
+        "textModes": [
+          "transform"
+        ],
+        "transitions": [],
+        "textTransitions": [
+          {
+            "kind": "stdout",
+            "from": "off",
+            "to": "transform",
+            "reason": "init"
+          },
+          {
+            "kind": "stderr",
+            "from": "off",
+            "to": "transform",
+            "reason": "init"
+          }
+        ]
+      },
+      "case": "T2_ascii_transform_100MB",
+      "totalMs": 6241
+    },
+    {
+      "code": 0,
+      "signal": null,
+      "durationMs": 420,
+      "outBytes": 52428800,
+      "errBytes": 44,
+      "hash": null,
+      "expectedBytes": 52428800,
+      "teeSize": 52428844,
+      "passed": true,
+      "tick": {
+        "samples": 0,
+        "heapMin": null,
+        "heapMax": null,
+        "heapAvg": 0,
+        "rssMin": null,
+        "rssMax": null,
+        "rssAvg": 0,
+        "states": [],
+        "textModes": [],
+        "transitions": [],
+        "textTransitions": [
+          {
+            "kind": "stdout",
+            "from": "off",
+            "to": "tee",
+            "reason": "init"
+          },
+          {
+            "kind": "stderr",
+            "from": "off",
+            "to": "tee",
+            "reason": "init"
+          }
+        ]
+      },
+      "case": "T3_ascii_tee_50MB",
+      "totalMs": 476
+    },
+    {
+      "code": 0,
+      "signal": null,
+      "durationMs": 879,
+      "outBytes": 104857601,
+      "errBytes": 44,
+      "hash": "1dc238ac5f249a27f9ab85bf6fc2c70d26ef9ab8565815d6f0c81867148b10f7",
+      "expectedBytes": 104857600,
+      "passed": false,
+      "tick": {
+        "samples": 1,
+        "heapMin": 3.1,
+        "heapMax": 3.1,
+        "heapAvg": 3.1,
+        "rssMin": 36.5,
+        "rssMax": 36.5,
+        "rssAvg": 36.5,
+        "states": [
+          "NORMAL"
+        ],
+        "textModes": [
+          "passthrough"
+        ],
+        "transitions": [],
+        "textTransitions": [
+          {
+            "kind": "stdout",
+            "from": "off",
+            "to": "passthrough",
+            "reason": "init"
+          },
+          {
+            "kind": "stderr",
+            "from": "off",
+            "to": "passthrough",
+            "reason": "init"
+          }
+        ]
+      },
+      "replacementCharCount": 0,
+      "case": "T4_utf8_passthrough_100MB",
+      "totalMs": 1296
+    },
+    {
+      "code": 0,
+      "signal": null,
+      "durationMs": 173,
+      "outBytes": 30000,
+      "errBytes": 58,
+      "hash": "e4eea943ab0d3c7771d9d782e3c93a920ac930a8062f9189afead7c593b8b164",
+      "expectedBytes": 30000,
+      "passed": true,
+      "byteIntegrity": true,
+      "tick": {
+        "samples": 0,
+        "heapMin": null,
+        "heapMax": null,
+        "heapAvg": 0,
+        "rssMin": null,
+        "rssMax": null,
+        "rssAvg": 0,
+        "states": [],
+        "textModes": [],
+        "transitions": [],
+        "textTransitions": [
+          {
+            "kind": "stdout",
+            "from": "off",
+            "to": "passthrough",
+            "reason": "init"
+          },
+          {
+            "kind": "stderr",
+            "from": "off",
+            "to": "passthrough",
+            "reason": "init"
+          }
+        ]
+      },
+      "case": "T5_boundary_10k_a",
+      "totalMs": 232
+    },
+    {
+      "code": 0,
+      "signal": null,
+      "durationMs": 309,
+      "outBytes": 104857600,
+      "errBytes": 45,
+      "hash": null,
+      "expectedBytes": 104857600,
+      "passed": true,
+      "tick": {
+        "samples": 0,
+        "heapMin": null,
+        "heapMax": null,
+        "heapAvg": 0,
+        "rssMin": null,
+        "rssMax": null,
+        "rssAvg": 0,
+        "states": [],
+        "textModes": [],
+        "transitions": [],
+        "textTransitions": [
+          {
+            "kind": "stdout",
+            "from": "off",
+            "to": "off",
+            "reason": "init"
+          },
+          {
+            "kind": "stderr",
+            "from": "off",
+            "to": "off",
+            "reason": "init"
+          }
+        ]
+      },
+      "case": "T6_off_baseline_100MB",
+      "totalMs": 362
+    },
+    {
+      "code": 0,
+      "signal": null,
+      "durationMs": 2635,
+      "outBytes": 1073741824,
+      "errBytes": 46,
+      "hash": null,
+      "expectedBytes": 1073741824,
+      "passed": true,
+      "tick": {
+        "samples": 5,
+        "heapMin": 3.7,
+        "heapMax": 6.4,
+        "heapAvg": 4.9399999999999995,
+        "rssMin": 35.8,
+        "rssMax": 45.7,
+        "rssAvg": 39.160000000000004,
+        "states": [
+          "NORMAL"
+        ],
+        "textModes": [
+          "passthrough"
+        ],
+        "transitions": [],
+        "textTransitions": [
+          {
+            "kind": "stdout",
+            "from": "off",
+            "to": "passthrough",
+            "reason": "init"
+          },
+          {
+            "kind": "stderr",
+            "from": "off",
+            "to": "passthrough",
+            "reason": "init"
+          }
+        ]
+      },
+      "case": "T7_ascii_passthrough_1GB",
+      "totalMs": 2690
+    },
+    {
+      "code": 0,
+      "signal": null,
+      "durationMs": 6143,
+      "outBytes": 1073741826,
+      "errBytes": 45,
+      "hash": null,
+      "expectedBytes": 1073741824,
+      "passed": false,
+      "tick": {
+        "samples": 12,
+        "heapMin": 3.9,
+        "heapMax": 6.7,
+        "heapAvg": 5.05,
+        "rssMin": 36.2,
+        "rssMax": 46.3,
+        "rssAvg": 39.90833333333334,
+        "states": [
+          "NORMAL"
+        ],
+        "textModes": [
+          "passthrough"
+        ],
+        "transitions": [],
+        "textTransitions": [
+          {
+            "kind": "stdout",
+            "from": "off",
+            "to": "passthrough",
+            "reason": "init"
+          },
+          {
+            "kind": "stderr",
+            "from": "off",
+            "to": "passthrough",
+            "reason": "init"
+          }
+        ]
+      },
+      "case": "T8_utf8_passthrough_1GB",
+      "totalMs": 6217
+    },
+    {
+      "code": 0,
+      "signal": null,
+      "durationMs": 304,
+      "outBytes": 52542464,
+      "errBytes": 44,
+      "hash": null,
+      "passed": true,
+      "tick": {
+        "samples": 3,
+        "heapMin": 4.1,
+        "heapMax": 5.2,
+        "heapAvg": 4.633333333333334,
+        "rssMin": 37.1,
+        "rssMax": 40.4,
+        "rssAvg": 38.800000000000004,
+        "states": [
+          "PRESSURE"
+        ],
+        "textModes": [
+          "passthrough"
+        ],
+        "transitions": [
+          {
+            "from": "NORMAL",
+            "to": "PRESSURE"
+          }
+        ],
+        "textTransitions": [
+          {
+            "kind": "stdout",
+            "from": "off",
+            "to": "transform",
+            "reason": "init"
+          },
+          {
+            "kind": "stderr",
+            "from": "off",
+            "to": "transform",
+            "reason": "init"
+          },
+          {
+            "kind": "stdout",
+            "from": "transform",
+            "to": "passthrough",
+            "reason": "policy-PRESSURE"
+          },
+          {
+            "kind": "stderr",
+            "from": "transform",
+            "to": "passthrough",
+            "reason": "policy-PRESSURE"
+          }
+        ]
+      },
+      "demoted": true,
+      "pressureSeen": true,
+      "case": "T9_auto_demote_under_pressure",
+      "totalMs": 366
+    }
+  ],
+  "timestamp": "2026-05-07T22:52:36.007Z"
+}
