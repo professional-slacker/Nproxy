@@ -1,3 +1,4 @@
+use std::os::fd::{AsRawFd, FromRawFd};
 use std::process::ExitCode;
 use std::sync::Arc;
 use clap::Parser;
@@ -38,6 +39,9 @@ struct Cli {
 
     #[arg(long = "memory-critical", default_value = "1024")]
     memory_critical: u64,
+
+    #[arg(long = "pty")]
+    pty: bool,
 
     #[arg(required = true)]
     cmd: String,
@@ -83,13 +87,29 @@ async fn main() -> ExitCode {
     }
 
     // --- Spawn child ---
-    let mut child = match child::spawn(&app, &app_args) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("nproxy: failed to spawn child '{}': {}", app, e);
-            return ExitCode::from(1);
-        }
-    };
+    let use_pty = cli.pty;
+    let mut child: tokio::process::Child;
+    let mut pty_master: Option<std::fs::File> = None;
+
+    if use_pty {
+        let (c, master_fd) = match child::spawn_pty(&app, &app_args) {
+            Ok((c, fd)) => (c, fd),
+            Err(e) => {
+                eprintln!("nproxy: failed to spawn child with pty '{}': {}", app, e);
+                return ExitCode::from(1);
+            }
+        };
+        child = c;
+        pty_master = Some(master_fd);
+    } else {
+        child = match child::spawn(&app, &app_args) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("nproxy: failed to spawn child '{}': {}", app, e);
+                return ExitCode::from(1);
+            }
+        };
+    }
 
     // --- Shared observer ---
     let observer = Arc::new(tokio::sync::RwLock::new(observer::Observer::new()));
@@ -113,29 +133,6 @@ async fn main() -> ExitCode {
             cli.text_log.clone(),
             mem_rx_text,
         ))))
-    };
-
-    // --- Take child pipes ---
-    let child_stdin = match child.stdin.take() {
-        Some(pipe) => pipe,
-        None => {
-            eprintln!("nproxy: FATAL - could not take child stdin pipe");
-            return ExitCode::from(1);
-        }
-    };
-    let child_stdout = match child.stdout.take() {
-        Some(pipe) => pipe,
-        None => {
-            eprintln!("nproxy: FATAL - could not take child stdout pipe");
-            return ExitCode::from(1);
-        }
-    };
-    let child_stderr = match child.stderr.take() {
-        Some(pipe) => pipe,
-        None => {
-            eprintln!("nproxy: FATAL - could not take child stderr pipe");
-            return ExitCode::from(1);
-        }
     };
 
     // --- Signal relay: forward SIGINT/SIGTERM/SIGHUP to child ---
@@ -179,17 +176,105 @@ async fn main() -> ExitCode {
         }
     });
 
-    // --- Stdin relay: spawn background task ---
-    // When relay finishes (stdin EOF), child_stdin is dropped.
-    // The child sees EOF on its stdin and exits naturally.
-    let obs = observer.clone();
-    let stdin_join = relay::spawn_stdin_relay(
-        tokio::io::stdin(),
-        child_stdin,
-        obs,
-    );
+    if use_pty {
+        // --- PTY mode: bidirectional relay via master fd ---
+        // Convert std::fs::File to tokio::fs::File for async I/O.
+        // Dup the fd so we have separate read/write handles.
+        let master_file = pty_master.take().expect("pty_master should be Some");
+        let raw_fd = master_file.as_raw_fd();
+        let read_fd = unsafe { libc::dup(raw_fd) };
+        if read_fd < 0 {
+            eprintln!("nproxy: FATAL - failed to dup pty master fd");
+            return ExitCode::from(1);
+        }
+        // SAFETY: read_fd and raw_fd are both valid independent fds.
+        let master_read = tokio::fs::File::from_std(unsafe { std::fs::File::from_raw_fd(read_fd) });
+        let master_write = tokio::fs::File::from_std(master_file);
 
-    // --- Stdout relay (text-aware) ---
+        // Reader: child stdout -> our stdout (with optional text transform)
+        let obs_reader = observer.clone();
+        let pipe_text = text_pipeline.clone();
+        let rx_throttle = mem_rx_throttle.clone();
+        let pty_read_join = tokio::spawn(async move {
+            if let Some(ref pipe) = pipe_text {
+                relay::spawn_text_relay(
+                    master_read,
+                    tokio::io::stdout(),
+                    obs_reader,
+                    Some(pipe.clone()),
+                    rx_throttle,
+                )
+                .await
+                .ok();
+            } else {
+                relay::spawn_relay(
+                    master_read,
+                    tokio::io::stdout(),
+                    obs_reader,
+                    observer::IoKind::Stdout,
+                    rx_throttle,
+                )
+                .await
+                .ok();
+            }
+        });
+
+        // Writer: our stdin -> child stdin
+        let pty_write_join = tokio::spawn(async move {
+            let mut stdin = tokio::io::stdin();
+            let mut child_stdin = master_write;
+            match tokio::io::copy(&mut stdin, &mut child_stdin).await {
+                Ok(n) => debug!("pty stdin relay finished: {} bytes", n),
+                Err(e) => warn!("pty stdin relay error: {}", e),
+            }
+            drop(child_stdin);
+        });
+
+        // --- Memory policy ticker ---
+        let _mem_join = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(mem_policy.interval()).await;
+                if mem_policy.tick() {
+                    debug!("memory state changed: {:?}", mem_policy.state);
+                    let _ = mem_tx.send(mem_policy.state);
+                }
+            }
+        });
+
+        // Wait for either side to finish (child will close pty on exit)
+        let _ = tokio::join!(pty_read_join, pty_write_join);
+
+        // Wait for child to exit
+        let exit_status = child::wait_for_exit(child).await;
+        match exit_status {
+            Ok(status) => {
+                let code = status.code().unwrap_or(1);
+                return ExitCode::from(code as u8);
+            }
+            Err(e) => {
+                eprintln!("nproxy: error waiting for child: {}", e);
+                return ExitCode::from(1);
+            }
+        }
+    }
+
+    // --- Pipe mode (stdout/stderr relay) ---
+    let child_stdout = match child.stdout.take() {
+        Some(pipe) => pipe,
+        None => {
+            eprintln!("nproxy: FATAL - could not take child stdout pipe");
+            return ExitCode::from(1);
+        }
+    };
+    let child_stderr = match child.stderr.take() {
+        Some(pipe) => pipe,
+        None => {
+            eprintln!("nproxy: FATAL - could not take child stderr pipe");
+            return ExitCode::from(1);
+        }
+    };
+
+    // --- Pipe mode: stdout relay (text-aware) ---
     let obs = observer.clone();
     let stdout_join = if let Some(ref pipe) = text_pipeline {
         relay::spawn_text_relay(
@@ -209,7 +294,7 @@ async fn main() -> ExitCode {
         )
     };
 
-    // --- Stderr relay ---
+    // --- Pipe mode: stderr relay ---
     let obs = observer.clone();
     let stderr_join = relay::spawn_relay(
         child_stderr,
@@ -219,7 +304,7 @@ async fn main() -> ExitCode {
         mem_rx_throttle.clone(),
     );
 
-    // --- Memory policy ticker (also propagates state to TextPipeline via watch channel) ---
+    // --- Memory policy ticker ---
     let _mem_join = tokio::spawn(async move {
         loop {
             tokio::time::sleep(mem_policy.interval()).await;
@@ -229,12 +314,6 @@ async fn main() -> ExitCode {
             }
         }
     });
-
-    // --- Wait for stdin relay to finish (EOF reached) ---
-    // child_stdin is now dropped → child sees EOF on stdin
-    if let Err(e) = stdin_join.await {
-        warn!("stdin relay task failed: {}", e);
-    }
 
     // --- Wait for stdout/stderr relays to finish ---
     if let Err(e) = stdout_join.await {
