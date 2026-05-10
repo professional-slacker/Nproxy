@@ -157,6 +157,7 @@ If this project saves you time or hassle, donations in crypto are welcome:
 Bitcoin:  bc1q096t3sc9mndnu94guxcwjqpg7c5qcdv3gf0e0g
 ETH:      0x1b9b7911585189c526d7740ce6c5e1c94c78aa84
 USDT:     0x1b9b7911585189c526d7740ce6c5e1c94c78aa84
+**Minimum $20+ due to wallet fees.**
 ```
 
 **nproxy は GPL 3.0 のフリーソフトウェアです。  
