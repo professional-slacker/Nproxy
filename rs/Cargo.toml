@@ -1,0 +1,25 @@
+[package]
+name = "nproxy"
+version = "0.9.0-beta.1"
+edition = "2021"
+description = "Runtime I/O proxy — transparent passthrough with memory-aware backpressure"
+license = "GPL-3.0-only"
+authors = ["professional-slacker <professional-slacker@users.noreply.github.com>"]
+homepage = "https://github.com/professional-slacker/nproxy"
+repository = "https://github.com/professional-slacker/nproxy"
+keywords = ["proxy", "io", "backpressure", "memory", "pipe"]
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+bytes = "1"
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+libc = "0.2"
+encoding_rs = "0.8"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"

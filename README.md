@@ -6,7 +6,7 @@
 
 ```
 node -r ./node/nproxy.js app.js          # Node preload mode
-cargo run -- command [args...]            # Rust CLI mode
+nproxy command [args...]                 # Rust CLI mode
 ```
 
 ---
@@ -67,7 +67,7 @@ If the child blocks on write, nproxy is simply "waiting for reads to resume."
 ### Node — preload mode (`-r`)
 
 ```bash
-NPROXY_AUTO=1 node -r ./node/nproxy.js /usr/bin/openclaude
+NPROXY_AUTO=1 node -r ./node/nproxy.js my-app.js
 
 # Environment variables
 NPROXY_TEXT=passthrough|transform|strip-ansi   # text processing mode (default: passthrough)
@@ -78,9 +78,9 @@ NPROXY_MEMLOG=60                               # periodic memory log in seconds 
 ```
 
 - `process.stdout.write` hook + memory monitoring with auto mode degradation
-- Coalescing to prevent Ink frame rate loss
+- Coalescing to prevent frame rate loss in interactive CLI frameworks (Ink, React, etc.)
 - Color-coded stderr feedback: pressure (yellow) / critical (blue) / normal (green)
-- Startup banner `◈ nproxy memory guard active` injected below OpenClaude header
+- Startup banner `◈ nproxy memory guard active` injected on first output
 - Cursor show/hide (`?25h`/`?25l`) preserved in transform/strip-ansi mode
 - Windows: undefined signals guarded with try/catch
 - **Alias note**: use `$HOME` instead of `~` in alias definitions (`~` may not expand inside single quotes)
@@ -154,9 +154,9 @@ nproxy is free software under the GPL 3.0.
 If this project saves you time or hassle, donations in crypto are welcome:
 
 ```
-Bitcoin:  bc1q...
-Ethereum: 0x...
-Monero:   4...
+Bitcoin:  bc1q096t3sc9mndnu94guxcwjqpg7c5qcdv3gf0e0g
+ETH:      0x1b9b7911585189c526d7740ce6c5e1c94c78aa84
+USDT:     0x1b9b7911585189c526d7740ce6c5e1c94c78aa84
 ```
 
 **nproxy は GPL 3.0 のフリーソフトウェアです。  
