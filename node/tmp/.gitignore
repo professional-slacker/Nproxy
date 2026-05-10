@@ -1,0 +1,6 @@
+*.out.bin
+*.out.txt
+*.in.bin
+*.in.txt
+huge_input.bin
+*.log
