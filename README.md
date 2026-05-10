@@ -1,8 +1,8 @@
 # nproxy — Runtime I/O Proxy
 
-> **nproxy はランタイム I/O プロキシである。**
-> **制御コードは解釈せず透過し、シグナルは中継する。**
-> **プロトコルや意味付けは nproxy の外側で行う。**
+> **nproxy is a runtime I/O proxy.**
+> **Control codes pass through transparently; signals are relayed.**
+> **Protocol and semantics live outside nproxy.**
 
 ```
 node -r ./node/nproxy.js app.js          # Node preload mode
@@ -11,79 +11,79 @@ cargo run -- command [args...]            # Rust CLI mode
 
 ---
 
-## 絶対要件 (Must)
+## Absolute Requirements (Must)
 
-この 3 点は言語・実装を問わず nproxy の根幹を定義する。
-**これらが動かなければ実装失敗。** コードレビュー時のチェックリスト。
+These 3 principles define nproxy regardless of language or implementation.
+**If any of these fail, the implementation is broken.** Code review checklist.
 
-### ① chunk 非保持 (No Chunk Retention)
+### ① No Chunk Retention
 
-chunk (Buffer / bytes) は passthrough する瞬間以外メモリに留めない。
-観測は size / ts / kind のメタ情報のみ。
+Chunks (Buffer/bytes) must not be held in memory except during passthrough.
+Only metadata (size, timestamp, kind) may be observed.
 
-| 違反時に起きる現象 |
+| Violation Consequence |
 |---|
-| OOM（即時 / 緩慢） |
+| OOM (immediate or gradual) |
 
-- Rust: `tokio::io::copy` / `copy_buf` で OS バッファに任せる
-- Node: `pipe()` のみ。`data` イベントで自前バッファに保持しない
-- Go: `io.Copy` / `io.CopyBuffer` でゼロアロケーション
+- Rust: `tokio::io::copy` / `copy_buf` — delegate to OS buffer
+- Node: `pipe()` only. Never buffer in `data` event handlers
+- Go: `io.Copy` / `io.CopyBuffer` — zero allocation
 
-### ② backpressure 委譲 (Delegate to OS-level)
+### ② Delegate to OS-level Backpressure
 
-自前でバッファを積まない。OS poll の「読まない → カーネル pipe buffer に詰まる → 上流 blocking」機構に乗る。
+Don't buffer internally. Rely on OS poll: "don't read → kernel pipe buffer fills → upstream blocks".
 
-| 違反時に起きる現象 |
+| Violation Consequence |
 |---|
-| flowing-mode 固定で機構破壊 → OOM か stall |
+| Flowing-mode fixed breaks the mechanism → OOM or stall |
 
-- **読むのを止める = 子の write をブロック** が唯一の正しい backpressure
-- `Poll::Pending` (Rust) / `ReadStop` (Node libuv) / 単に read しない (Go)
-- バッファリングは OS の役割。nproxy はバッファしない
+- **Stop reading = block child's write** is the only correct backpressure
+- `Poll::Pending` (Rust) / `ReadStop` (Node libuv) / simply not reading (Go)
+- OS buffers. nproxy doesn't buffer.
 
-### ③ policy は副作用の縮退のみ (Policy Reduces Side-effects Only)
+### ③ Policy Reduces Side-effects Only
 
-本流 (passthrough) は絶対に止めない／拒否しない。
-縮退するのは観測解像度・ring buffer・text mode などの副作用のみ。
+The main path (passthrough) must never be stopped or rejected.
+Only side-effects (observation resolution, ring buffer, text mode) can be degraded.
 
-| 違反時に起きる現象 |
+| Violation Consequence |
 |---|
-| 「拒否しない／止めない」要件違反。プロキシの存在意義が消える |
+| Violates "never reject / never stop". The proxy loses its reason to exist. |
 
-| state | byte 層 | text 層 |
+| state | byte layer | text layer |
 |---|---|---|
-| NORMAL | 詳細観測 + ring 1024 件 | text-on-by-config |
-| PRESSURE | サマリ観測 + ring 128 件 + text-AUTO-OFF | 重い変換は停止 |
-| CRITICAL | 観測停止 + ring 0 件 + text-完全OFF + **ReadGate closed** | backpressure で子を抑制 |
+| NORMAL | full observation + ring 1024 | text-on-by-config |
+| PRESSURE | summary + ring 128 + text-AUTO-OFF | heavy transforms stop |
+| CRITICAL | observation off + ring 0 + text-OFF + **ReadGate closed** | backpressure suppresses child |
 
-**どの状態でも passthrough の本流は動き続ける。**
-CRITICAL でも ReadGate で読み出しを止めるのは backpressure の本流動作であって遮断ではない。
-子が write をブロックされても nproxy は「読み出せる状態を待っている」だけ。
+**In every state, the passthrough main path continues.**
+Even in CRITICAL, ReadGate stopping reads is backpressure — not blocking.
+If the child blocks on write, nproxy is simply "waiting for reads to resume."
 
 ---
 
-## 実装
+## Implementations
 
 ### Node — preload mode (`-r`)
 
 ```bash
 NPROXY_AUTO=1 node -r ./node/nproxy.js /usr/bin/openclaude
 
-# 環境変数
-NPROXY_TEXT=passthrough|transform|strip-ansi   # text 処理モード (default: passthrough)
-NPROXY_AUTO=1                                  # intercept() を自動呼び出し
-NPROXY_PRESSURE_MB=1024                        # メモリ節約モード閾値 (default: 512)
-NPROXY_CRITICAL_MB=1536                        # 本気の節約モード閾値 (default: 1024)
-NPROXY_MEMLOG=60                               # 定期メモリログ (秒, 0=OFF)
+# Environment variables
+NPROXY_TEXT=passthrough|transform|strip-ansi   # text processing mode (default: passthrough)
+NPROXY_AUTO=1                                  # auto-call intercept()
+NPROXY_PRESSURE_MB=512                         # memory throttle threshold (default: 512)
+NPROXY_CRITICAL_MB=1024                        # critical throttle threshold (default: 1024)
+NPROXY_MEMLOG=60                               # periodic memory log in seconds (0=OFF)
 ```
 
-- `process.stdout.write` フック + メモリ監視による自動 mode 縮退
-- coalescing で Ink フレームレート低下防止
-- pressure (黄) / critical (青) / normal (緑) の色付き stderr フィードバック
-- 起動時 `◈ nproxy memory guard active` バナーを OpenClaude ヘッダー直下に注入
-- cursor show/hide (`?25h`/`?25l`) は transform/strip-ansi でも保持
-- Windows: 未定義シグナルを try/catch でガード
-- **alias の注意**: `~` ではなく `$HOME` を使うこと（シングルクォート内の `~` は展開されない場合がある）
+- `process.stdout.write` hook + memory monitoring with auto mode degradation
+- Coalescing to prevent Ink frame rate loss
+- Color-coded stderr feedback: pressure (yellow) / critical (blue) / normal (green)
+- Startup banner `◈ nproxy memory guard active` injected below OpenClaude header
+- Cursor show/hide (`?25h`/`?25l`) preserved in transform/strip-ansi mode
+- Windows: undefined signals guarded with try/catch
+- **Alias note**: use `$HOME` instead of `~` in alias definitions (`~` may not expand inside single quotes)
 
 ### Rust — CLI relay
 
@@ -93,57 +93,57 @@ cargo run --release -- --text=strip-ansi -- command [args...]
 ```
 
 - `tokio::process::Command` + `AsyncRead`/`AsyncWrite` relay
-- `ReadGate` による poll 停止ベースの backpressure
-- `/proc/<child_pid>/status` RSS 監視 → watch channel → relay へ通知
-- TextPipeline: passthrough / strip-ansi / transform + 自動縮退
+- `ReadGate` poll-stop backpressure
+- `/proc/<child_pid>/status` RSS monitoring → watch channel → relay notification
+- TextPipeline: passthrough / strip-ansi / transform + auto degradation
 
 ---
 
-## 設計原則対応表 (言語横断)
+## Cross-language Design Principles
 
-| 設計思想 | Node 実装 | Rust 実装 | 共通の根 |
+| Design | Node | Rust | Common Root |
 |---|---|---|---|
-| chunk 非保持 | `pipe()` のみ | `tokio::io::copy` / `copy_buf` | OS バッファに任せる |
-| backpressure | libuv ReadStop/ReadStart | Tokio AsyncRead poll → `Poll::Pending` | OS poll 停止/再開 |
-| policy 縮退 | JS state + setInterval | `MemoryPolicy` + watch channel | 状態は副作用のみ |
-| chunk = 最小単位 | Buffer (V8 ArrayBuffer) | `Bytes`/`BytesMut` | OS ページ単位 |
-| ランタイム I/O | libuv | epoll / kqueue / IOCP | 各 OS poll API |
+| No Chunk Retention | `pipe()` only | `tokio::io::copy` / `copy_buf` | Delegate to OS buffer |
+| Backpressure | libuv ReadStop/ReadStart | Tokio AsyncRead poll → `Poll::Pending` | OS poll stop/resume |
+| Policy Degradation | JS state + setInterval | `MemoryPolicy` + watch channel | State affects side-effects only |
+| Chunk = Minimal Unit | Buffer (V8 ArrayBuffer) | `Bytes`/`BytesMut` | OS page size |
+| Runtime I/O | libuv | epoll / kqueue / IOCP | Per-OS poll API |
 
 ---
 
-## Rust で解放される領域
+## Rust-specific Capabilities
 
-| 機能 | OS API | 意味 |
+| Feature | OS API | Description |
 |---|---|---|
-| zero-copy pipe→pipe | `splice(2)` (Linux) | 観測不要時、コピーゼロで中継 |
-| zero-copy file→socket | `sendfile(2)` | CPU 1% 未満で大容量転送 |
-| pipe 分岐 | `tee(2)` | ログ取りに最適 |
-| バッチ I/O | `io_uring` (Linux 5.1+) | 高スループット低レイテンシ |
-| pty 完全制御 | `posix_openpt` 等 | TTY raw mode / SIGWINCH 中継 |
-| cgroup / rlimit | cgroup v2 | 子メモリ上限引き下げ（kill 不要） |
-| シグナル順序保証 | `signalfd` / kqueue | SIGCHLD と SIGTERM 競合解消 |
+| zero-copy pipe→pipe | `splice(2)` (Linux) | Copy-free relay when observation is off |
+| zero-copy file→socket | `sendfile(2)` | Large transfer at <1% CPU |
+| pipe forking | `tee(2)` | Ideal for logging |
+| batch I/O | `io_uring` (Linux 5.1+) | High throughput, low latency |
+| pty full control | `posix_openpt` etc | TTY raw mode / SIGWINCH relay |
+| cgroup / rlimit | cgroup v2 | Child memory limit without kill |
+| signal ordering | `signalfd` / kqueue | Resolve SIGCHLD vs SIGTERM races |
 
 ---
 
-## 構成
+## Project Structure
 
 ```
 .
-├── node/           Node.js preload mode 実装
+├── node/           Node.js preload mode implementation
 │   └── nproxy.js
-├── rs/             Rust CLI relay 実装
+├── rs/             Rust CLI relay implementation
 │   ├── src/
 │   │   ├── main.rs
 │   │   ├── relay.rs       ← ReadGate + spawn_relay/spawn_text_relay
-│   │   ├── memory.rs      ← /proc/<pid>/status RSS 監視
-│   │   ├── text.rs        ← TextPipeline + 状態縮退
-│   │   ├── observer.rs    ← メタ観測（ring buffer / size / ts）
-│   │   └── child.rs       ← 子プロセス spawn + signal relay
+│   │   ├── memory.rs      ← /proc/<pid>/status RSS monitoring
+│   │   ├── text.rs        ← TextPipeline + state degradation
+│   │   ├── observer.rs    ← meta observation (ring buffer / size / ts)
+│   │   └── child.rs       ← child process spawn + signal relay
 │   ├── tests/
 │   └── Cargo.toml
-├── result/         旧 Node プロトタイプ一式
-├── doc/            設計ドキュメント
-└── README.md       ← このファイル
+├── result/         Legacy Node prototypes
+├── doc/            Design documentation
+└── README.md
 ```
 
 ---
@@ -164,11 +164,12 @@ Monero:   4...
 
 ---
 
-## コードレビューチェックリスト
+## Code Review Checklist
 
-ファイル [`REVIEW_CHECKLIST.md`](./REVIEW_CHECKLIST.md) を参照。
-レビュー時は以下の観点でチェックする:
+See [`REVIEW_CHECKLIST.md`](./REVIEW_CHECKLIST.md).
 
-- [ ] chunk 非保持 — chunk をフィールド/クロージャに保持していないか
-- [ ] backpressure 委譲 — `Poll::Pending` / `ReadStop` / read しない、で止めているか
-- [ ] policy 縮退のみ — 本流の停止/拒否が発生していないか
+Review must verify:
+
+- [ ] No Chunk Retention — no chunk held in fields/closures
+- [ ] Backpressure delegation — `Poll::Pending` / `ReadStop` / not-reading
+- [ ] Policy reduces side-effects only — main path never stopped/rejected
