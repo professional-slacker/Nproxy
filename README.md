@@ -148,6 +148,22 @@ cargo run --release -- --text=strip-ansi -- command [args...]
 
 ---
 
+## Support
+
+nproxy is free software under the GPL 3.0.  
+If this project saves you time or hassle, donations in crypto are welcome:
+
+```
+Bitcoin:  bc1q...
+Ethereum: 0x...
+Monero:   4...
+```
+
+**nproxy は GPL 3.0 のフリーソフトウェアです。  
+役に立ったと思ったら、任意の暗号通貨支援をお願いします 🙏**
+
+---
+
 ## コードレビューチェックリスト
 
 ファイル [`REVIEW_CHECKLIST.md`](./REVIEW_CHECKLIST.md) を参照。
