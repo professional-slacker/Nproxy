@@ -134,6 +134,8 @@ class MemoryMonitor {
 function intercept() {
   let textMode = process.env.NPROXY_TEXT || 'passthrough';
   let processText = createTextProcessor(textMode);
+  process.env.NPROXY_PRESSURE_MB = process.env.NPROXY_PRESSURE_MB || '512';
+  process.env.NPROXY_CRITICAL_MB = process.env.NPROXY_CRITICAL_MB || '1024';
 
   // Startup banner: show Nproxy is active with a green badge
   const GREEN = '\x1b[32m';
@@ -144,6 +146,27 @@ function intercept() {
   const RESET = '\x1b[0m';
   let bannerShown = false;
   const BANNER_ANCHOR = '✦ Any model. Every tool. Zero limits. ✦';
+  function injectBanner() {
+    if (bannerShown) return '';
+    bannerShown = true;
+    const pressure = process.env.NPROXY_PRESSURE_MB;
+    const critical = process.env.NPROXY_CRITICAL_MB;
+    const icon = `${BOLD}◈${RESET}${GREEN}`;
+    const title = ` nproxy memory guard active`;
+    const sub = `pressure=${pressure}MB  critical=${critical}MB`;
+    const boxW = 56;
+    const pad1 = boxW - 1 - (icon.replace(/\x1b\[[\d;]*m/g, '') + title).length;
+    const pad2 = boxW - 1 - sub.length;
+    return `  ${DIM_GREEN}╔${'═'.repeat(boxW)}╗${RESET}\n` +
+      `  ${DIM_GREEN}║ ${icon}${title}${' '.repeat(pad1)}${DIM_GREEN}║${RESET}\n` +
+      `  ${DIM_GREEN}║ ${sub}${' '.repeat(pad2)}${DIM_GREEN}║${RESET}\n` +
+      `  ${DIM_GREEN}╚${'═'.repeat(boxW)}╝${RESET}\n`;
+  }
+  // Fallback: if banner anchor is never seen, inject after 3s
+  const bannerTimer = setTimeout(() => {
+    const banner = injectBanner();
+    if (banner) process.stderr.write(banner);
+  }, 3000);
 
   // Chunk size limit per write (0 = no limit)
   let maxChunkBytes = 0;
@@ -193,22 +216,13 @@ function intercept() {
   process.stdout._origWrite = origStdoutWrite;
   process.stdout.write = function (chunk, encoding, callback) {
     if (!bannerShown && typeof chunk === 'string' && chunk.replace(/\x1b\[[\d;]*m/g, '').includes(BANNER_ANCHOR)) {
-      bannerShown = true;
-      const lastNewline = chunk.lastIndexOf('\n');
-      if (lastNewline !== -1) {
-        const pressure = process.env.NPROXY_PRESSURE_MB || 512;
-        const critical = process.env.NPROXY_CRITICAL_MB || 1024;
-        const icon = `${BOLD}◈${RESET}${GREEN}`;
-        const title = ` nproxy memory guard active`;
-        const sub = `pressure=${pressure}MB  critical=${critical}MB`;
-        const boxW = 56;
-        const pad1 = boxW - 1 - (icon.replace(/\x1b\[[\d;]*m/g, '') + title).length;
-        const pad2 = boxW - 1 - sub.length;
-        chunk = chunk.slice(0, lastNewline + 1) +
-          `  ${DIM_GREEN}╔${'═'.repeat(boxW)}╗${RESET}\n` +
-          `  ${DIM_GREEN}║ ${icon}${title}${' '.repeat(pad1)}${DIM_GREEN}║${RESET}\n` +
-          `  ${DIM_GREEN}║ ${sub}${' '.repeat(pad2)}${DIM_GREEN}║${RESET}\n` +
-          `  ${DIM_GREEN}╚${'═'.repeat(boxW)}╝${RESET}\n`;
+      clearTimeout(bannerTimer);
+      const banner = injectBanner();
+      if (banner) {
+        const lastNewline = chunk.lastIndexOf('\n');
+        if (lastNewline !== -1) {
+          chunk = chunk.slice(0, lastNewline + 1) + banner;
+        }
       }
     }
     if (typeof chunk === 'string' || chunk instanceof Buffer) {
