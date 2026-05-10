@@ -49,8 +49,8 @@ function createTextProcessor(mode) {
   // Strip if: final byte is anything else, or it has private marker (? > = etc.)
   // Strip: OSC (\x1b]...ST), DCS (\x1bP...ST), SOS/PM/APC (\x1bX\x1b^\x1b_)
   // CSI final bytes 0x40-0x7e (@ through ~), excluding 0x3f (?) which is a private marker
-  const keepFinal = new Set(['A','B','C','D','G','H','J','K','S','T','f','H','m','s','u','n']);
-  const ansiRe = /\x1b\[[\x20-\x3f]*[\d;]*[\x40-\x7e]|\x1b[PX^_].*?(?:\x07|\x1b\\)|\x1b[X^_\\]|[\x80-\x9f]/g;
+  const keepFinal = new Set(['A','B','C','D','G','H','J','K','S','T','f','H','m','s','u','n','l','h']);
+  const ansiRe = /\x1b\[[\x20-\x3f]*[\d;]*[\x40-\x7e]|\x1b[PX^_].*?(?:\x07|\x1b\\)|\x1b].*?(?:\x07|\x1b\\)|\x1b[X^_\\]|[\x80-\x9f]/g;
 
   function stripAnsi(s) {
     if (typeof s !== 'string') return s;
@@ -60,9 +60,15 @@ function createTextProcessor(mode) {
         // Check for private markers: characters 0x20-0x2f between '[' and params
         const paramStart = 2;
         let i = paramStart;
-        while (i < m.length && m.charCodeAt(i) >= 0x20 && m.charCodeAt(i) <= 0x2f) i++;
+        let marker = '';
+        while (i < m.length && m.charCodeAt(i) >= 0x20 && m.charCodeAt(i) <= 0x2f) {
+          marker += m[i];
+          i++;
+        }
+        // Allow cursor show/hide: \x1b[?25h and \x1b[?25l
+        if (marker === '?' && (m.endsWith('h') || m.endsWith('l'))) return m;
         if (i > paramStart) return ''; // has private/prefix marker -> strip
-        // Find final byte (last char before \x30-\x7e or last char)
+        // Find final byte
         const finalByte = m[m.length - 1];
         if (keepFinal.has(finalByte)) return m; // keep
         return ''; // strip
@@ -87,8 +93,8 @@ function createTextProcessor(mode) {
 // ---- Memory Monitor ----
 class MemoryMonitor {
   constructor(opts = {}) {
-    this.pressureMb = opts.pressureMb || 512;
-    this.criticalMb = opts.criticalMb || 1024;
+    this.pressureMb = opts.pressureMb || parseInt(process.env.NPROXY_PRESSURE_MB || '512', 10);
+    this.criticalMb = opts.criticalMb || parseInt(process.env.NPROXY_CRITICAL_MB || '1024', 10);
     this.tickMs = opts.tickMs || 500;
     this.state = 'normal'; // 'normal' | 'pressure' | 'critical'
     this._timer = null;
@@ -128,6 +134,16 @@ class MemoryMonitor {
 function intercept() {
   let textMode = process.env.NPROXY_TEXT || 'passthrough';
   let processText = createTextProcessor(textMode);
+
+  // Startup banner: show Nproxy is active with a green badge
+  const GREEN = '\x1b[32m';
+  const DIM_GREEN = '\x1b[32;2m';
+  const YELLOW = '\x1b[33m';
+  const BLUE = '\x1b[34m';
+  const BOLD = '\x1b[1m';
+  const RESET = '\x1b[0m';
+  let bannerShown = false;
+  const BANNER_ANCHOR = '✦ Any model. Every tool. Zero limits. ✦';
 
   // Chunk size limit per write (0 = no limit)
   let maxChunkBytes = 0;
@@ -176,6 +192,25 @@ function intercept() {
   const origStdoutWrite = process.stdout.write.bind(process.stdout);
   process.stdout._origWrite = origStdoutWrite;
   process.stdout.write = function (chunk, encoding, callback) {
+    if (!bannerShown && typeof chunk === 'string' && chunk.replace(/\x1b\[[\d;]*m/g, '').includes(BANNER_ANCHOR)) {
+      bannerShown = true;
+      const lastNewline = chunk.lastIndexOf('\n');
+      if (lastNewline !== -1) {
+        const pressure = process.env.NPROXY_PRESSURE_MB || 512;
+        const critical = process.env.NPROXY_CRITICAL_MB || 1024;
+        const icon = `${BOLD}◈${RESET}${GREEN}`;
+        const title = ` nproxy memory guard active`;
+        const sub = `pressure=${pressure}MB  critical=${critical}MB`;
+        const boxW = 56;
+        const pad1 = boxW - 1 - (icon.replace(/\x1b\[[\d;]*m/g, '') + title).length;
+        const pad2 = boxW - 1 - sub.length;
+        chunk = chunk.slice(0, lastNewline + 1) +
+          `  ${DIM_GREEN}╔${'═'.repeat(boxW)}╗${RESET}\n` +
+          `  ${DIM_GREEN}║ ${icon}${title}${' '.repeat(pad1)}${DIM_GREEN}║${RESET}\n` +
+          `  ${DIM_GREEN}║ ${sub}${' '.repeat(pad2)}${DIM_GREEN}║${RESET}\n` +
+          `  ${DIM_GREEN}╚${'═'.repeat(boxW)}╝${RESET}\n`;
+      }
+    }
     if (typeof chunk === 'string' || chunk instanceof Buffer) {
       if (textMode === 'passthrough') {
         if (bypassCoalesce) {
@@ -238,21 +273,21 @@ function intercept() {
           textMode = 'strip-ansi';
           processText = createTextProcessor(textMode);
           flushCoalesce();
-          process.stderr.write(`[nproxy] memory pressure: ${heapMb}MB — auto-switch to strip-ansi, chunk 64KB\n`);
+          process.stderr.write(`${YELLOW}[nproxy]${RESET} memory pressure: ${heapMb}MB — throttling I/O\n`);
         } else {
           flushCoalesce();
-          process.stderr.write(`[nproxy] memory pressure: ${heapMb}MB — chunk 64KB\n`);
+          process.stderr.write(`${YELLOW}[nproxy]${RESET} memory pressure: ${heapMb}MB — throttling I/O\n`);
         }
       } else if (state === 'critical') {
         maxChunkBytes = MAX_CHUNK_CRITICAL;
         flushCoalesce();
-        process.stderr.write(`[nproxy] critical memory: ${heapMb}MB — chunk 4KB\n`);
+        process.stderr.write(`${BLUE}${BOLD}[nproxy]${RESET}${BLUE} memory saving: ${heapMb}MB — throttling I/O${RESET}\n`);
       } else {
         maxChunkBytes = MAX_CHUNK_NORMAL;
         if (textMode !== process.env.NPROXY_TEXT && textMode !== 'passthrough') {
           textMode = process.env.NPROXY_TEXT || 'passthrough';
           processText = createTextProcessor(textMode);
-          process.stderr.write(`[nproxy] memory recovered: ${heapMb}MB — restore ${textMode}\n`);
+          process.stderr.write(`${GREEN}[nproxy]${RESET} memory recovered: ${heapMb}MB — I/O normal\n`);
         }
       }
     },
@@ -266,7 +301,8 @@ function intercept() {
       const heapMb = (m.heapUsed / 1024 / 1024).toFixed(1);
       const rssMb = (m.rss / 1024 / 1024).toFixed(1);
       const extMb = (m.external / 1024 / 1024).toFixed(1);
-      process.stderr.write(`[nproxy] mem RSS=${rssMb}MB heap=${heapMb}MB ext=${extMb}MB state=${monitor.state}\n`);
+      const stateColor = monitor.state === 'critical' ? BLUE : monitor.state === 'pressure' ? YELLOW : GREEN;
+      process.stderr.write(`${stateColor}[nproxy]${RESET} mem RSS=${rssMb}MB heap=${heapMb}MB ext=${extMb}MB state=${stateColor}${monitor.state}${RESET}\n`);
       memLogTimer = setTimeout(logMem, memLogInterval).unref();
     }
     logMem();
@@ -308,8 +344,8 @@ Preload mode env vars:
   if (usePty) {
     // ---- PTY mode: use node-pty for TTY emulation ----
     let pty;
-    try { pty = require('/usr/lib/node_modules/node-pty'); } catch (e) {
-      process.stderr.write('[nproxy] node-pty not available. Install: sudo npm install -g node-pty\n');
+    try { pty = require('node-pty'); } catch (e) {
+      process.stderr.write('[nproxy] node-pty not available. Install: npm install -g node-pty\n');
       process.exit(1);
     }
     const env = { ...process.env, TERM: process.env.TERM || 'xterm-256color' };
@@ -335,17 +371,32 @@ Preload mode env vars:
       }
     });
   } else {
-    // ---- Pipe mode: child_process.spawn with inherit stdin ----
-    const isScript = /\.(js|mjs|cjs)$/i.test(cli.app);
-    child = isScript
-      ? spawn(process.execPath, [cli.app, ...cli.appArgs], {
-          stdio: ['inherit', 'pipe', 'pipe'],
-          env: process.env,
-        })
-      : spawn(cli.app, cli.appArgs, {
-          stdio: ['inherit', 'pipe', 'pipe'],
-          env: process.env,
-        });
+    // ---- Pipe mode: child_process.spawn ----
+    // Spawn via node -r nproxy.js for scripts that contain "node" in their
+    // shebang (e.g. /usr/bin/openclaude) as well as .js/.mjs/.cjs files.
+    // This ensures preload intercept works for any Node-based executable.
+    // Non-Node binaries (ELF, Windows PE) are spawned directly.
+    const isScript = /\.(js|mjs|cjs)$/i.test(cli.app) || (() => {
+      try {
+        const fs = require('fs');
+        const buf = Buffer.alloc(128);
+        const fd = fs.openSync(cli.app, 'r');
+        fs.readSync(fd, buf, 0, 128, 0);
+        fs.closeSync(fd);
+        return buf.includes('node');
+      } catch { return false; }
+    })();
+    if (isScript) {
+      child = spawn(process.execPath, ['-r', __filename, cli.app, ...cli.appArgs], {
+        stdio: ['inherit', 'pipe', 'pipe'],
+        env: { ...process.env, NPROXY_AUTO: '1', NPROXY_TEXT: textMode },
+      });
+    } else {
+      child = spawn(cli.app, cli.appArgs, {
+        stdio: ['inherit', 'pipe', 'pipe'],
+        env: process.env,
+      });
+    }
 
     // Stdout relay with backpressure handling
     child.stdout.pause();
@@ -373,10 +424,12 @@ Preload mode env vars:
     });
     child.stderr.resume();
 
-    // Signal relay (pipe mode)
+    // Signal relay (pipe mode) — guard for Windows where some signals are undefined
     const signals = ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGUSR1', 'SIGUSR2', 'SIGWINCH'];
     for (const sig of signals) {
-      process.on(sig, () => { child.kill(sig); });
+      try { process.on(sig, () => { child.kill(sig); }); } catch (e) {
+        // skip signals not available on this platform (e.g. SIGWINCH on Windows)
+      }
     }
 
     child.on('exit', (code, sig) => {
