@@ -1,0 +1,1 @@
+cmd_Release/obj.target/nheap_limit.node := g++ -o Release/obj.target/nheap_limit.node -shared -pthread -rdynamic -m64  -Wl,-soname=nheap_limit.node -Wl,--start-group Release/obj.target/nheap_limit/nheap_limit.o -Wl,--end-group 

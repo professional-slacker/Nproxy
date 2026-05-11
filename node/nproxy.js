@@ -13,6 +13,18 @@
 //   3. Protocol layer is outside nproxy
 // ============================================================
 
+// ---- Default thresholds (env only, never hardcode magic numbers) ----
+const DFS_ATTENTION_MB = 256;
+const DFS_PRESSURE_MB = 512;
+const DFS_CRITICAL_MB = 1024;
+const DFS_EMERGENCY_MB = 1280;
+const DEFAULT_ATTENTION_MB = parseInt(process.env.NPROXY_ATTENTION_MB || String(DFS_ATTENTION_MB), 10);
+const DEFAULT_PRESSURE_MB = parseInt(process.env.NPROXY_PRESSURE_MB || String(DFS_PRESSURE_MB), 10);
+const DEFAULT_CRITICAL_MB = parseInt(process.env.NPROXY_CRITICAL_MB || String(DFS_CRITICAL_MB), 10);
+const DEFAULT_EMERGENCY_MB = parseInt(process.env.NPROXY_EMERGENCY_MB || String(DFS_EMERGENCY_MB), 10);
+const DEFAULT_TICK_MS = parseInt(process.env.NPROXY_TICK_MS || '200', 10);
+const DEFAULT_MONITOR = process.env.NPROXY_MONITOR || 'rss'; // rss | split | array
+
 // ---- CLI arg parsing ----
 function parseArgs(argv) {
   const out = { text: null, textLog: null, pty: false, app: null, appArgs: [] };
@@ -93,13 +105,36 @@ function createTextProcessor(mode) {
 // ---- Memory Monitor ----
 class MemoryMonitor {
   constructor(opts = {}) {
-    this.pressureMb = opts.pressureMb || parseInt(process.env.NPROXY_PRESSURE_MB || '512', 10);
-    this.criticalMb = opts.criticalMb || parseInt(process.env.NPROXY_CRITICAL_MB || '1024', 10);
-    this.tickMs = opts.tickMs || 500;
-    this.state = 'normal'; // 'normal' | 'pressure' | 'critical'
+    this.attentionMb = opts.attentionMb || DEFAULT_ATTENTION_MB;
+    this.pressureMb = opts.pressureMb || DEFAULT_PRESSURE_MB;
+    this.criticalMb = opts.criticalMb || DEFAULT_CRITICAL_MB;
+    this.emergencyMb = opts.emergencyMb || DEFAULT_EMERGENCY_MB;
+    this.tickMs = Math.max(50, parseInt(opts.tickMs, 10) || DEFAULT_TICK_MS); // default 200ms, min 50ms
+    // 5-stage guard: monitoring -> attention -> pressure -> critical -> emergency
+    this.state = 'monitoring';
     this._timer = null;
     this._onTransition = opts.onTransition || (() => {});
+    // If set, monitor child process RSS via /proc/{pid}/status instead of process.memoryUsage()
+    this.childPid = opts.childPid || 0;
+    this._rssKb = 0;
+    this._heapMb = 0;
+    // -- surge detection --
+    this._prevMb = 0;
+    this._surgeThreshold = opts.surgeThresholdMb || 32;
+    this._consecutiveSurges = 0;
+    // -- V8 heap/external spike tracking (preload mode only) --
+    this._prevHeapUsed = 0;
+    this._prevExternal = 0;
+    // -- spike count: consecutive spike detections before emergency --
+    this._spikeCount = 0;
+    // -- monitor tier: 'rss' | 'split' | 'array' --
+    this.monitorTier = opts.monitorTier || DEFAULT_MONITOR;
+    // -- guard: installMonitorTier() でプロトタイプ変更済みか --
+    this._tierInstalled = false;
+    this._arrayProxyInstalled = false;
   }
+
+  get rssMb() { return Math.round(this._rssKb / 1024); }
 
   start() {
     this._tick();
@@ -112,14 +147,99 @@ class MemoryMonitor {
     return this;
   }
 
+  // Read VmRSS from /proc/{pid}/status (Linux only)
+  _readChildRssKb() {
+    try {
+      const fs = require('fs');
+      const status = fs.readFileSync(`/proc/${this.childPid}/status`, 'utf8');
+      const m = status.match(/^VmRSS:\s+(\d+)\s+kB/m);
+      return m ? parseInt(m[1], 10) : 0;
+    } catch {
+      return 0; // process may have exited, file may not exist (non-Linux)
+    }
+  }
+
   _tick() {
-    const usage = process.memoryUsage();
-    const heapMb = Math.round(usage.heapUsed / 1024 / 1024);
+    let heapMb;
+    let usage;
+    let heapUsedMb = 0;
+    if (this.childPid > 0) {
+      this._rssKb = this._readChildRssKb();
+      heapMb = Math.round(this._rssKb / 1024);
+    } else {
+      usage = process.memoryUsage();
+      // Use RSS as the pressure metric: it captures V8 heap + external memory
+      // (Buffer.alloc, native addons) + the process's actual memory footprint.
+      heapMb = Math.round(usage.rss / 1024 / 1024);
+      heapUsedMb = Math.round(usage.heapUsed / 1024 / 1024);
+    }
+    this._heapMb = heapMb;
+
+    // Surge detection: if RSS grew faster than surgeThreshold per tick,
+    // transition to pressure (even before reaching pressureMb).
+    const delta = this._prevMb > 0 ? heapMb - this._prevMb : 0;
+    this._prevMb = heapMb;
+
+    // V8 heap/external spike detection: catch rapid heap growth before RSS catches up
+    // String.split, large array ops can spike heapUsed 100MB+ in a single tick
+    // Spike count: 1st → warning on stderr, 2nd consecutive → emergency
+    let spikeMb = 0;
+    if (usage) {
+      const heapDelta = usage.heapUsed - (this._prevHeapUsed || usage.heapUsed);
+      const extDelta = usage.external - (this._prevExternal || usage.external);
+      spikeMb = Math.max(heapDelta, extDelta) / 1024 / 1024;
+      this._prevHeapUsed = usage.heapUsed;
+      this._prevExternal = usage.external;
+    }
+
+    // Use max(RSS, heapUsed) for state determination.
+    // In preload mode, V8 heapUsed can spike far above RSS (e.g. String.split).
+    // In spawn mode, heapUsedMb is 0, so RSS alone drives the state.
+    const effectiveMb = heapUsedMb > heapMb ? heapUsedMb : heapMb;
 
     let newState;
-    if (heapMb >= this.criticalMb) newState = 'critical';
-    else if (heapMb >= this.pressureMb) newState = 'pressure';
-    else newState = 'normal';
+    if ((usage && spikeMb > 100) && this._spikeCount >= 1) {
+      newState = 'emergency';
+      this._spikeCount = 0;
+      this._consecutiveSurges = 0;
+    } else if (effectiveMb >= this.emergencyMb) {
+      newState = 'emergency';
+      this._spikeCount = 0;
+      this._consecutiveSurges = 0;
+    } else if (effectiveMb >= this.criticalMb) {
+      newState = 'critical';
+      this._spikeCount = 0;
+      this._consecutiveSurges = 0;
+    } else if (effectiveMb >= this.pressureMb) {
+      newState = 'pressure';
+      this._spikeCount = 0;
+      this._consecutiveSurges = 0;
+    } else if (effectiveMb >= this.attentionMb) {
+      newState = 'attention';
+      this._spikeCount = 0;
+      this._consecutiveSurges = 0;
+    } else if (delta >= this._surgeThreshold && (this.state === 'monitoring' || this.state === 'attention')) {
+      this._consecutiveSurges++;
+      newState = 'attention';
+    } else if (delta >= this._surgeThreshold / 2 && (this.state === 'monitoring' || this.state === 'attention')) {
+      this._consecutiveSurges++;
+      newState = this._consecutiveSurges >= 2 ? 'attention' : 'monitoring';
+    } else {
+      newState = 'monitoring';
+      this._consecutiveSurges = 0;
+    }
+
+    // Spike tracking: if spike detected but not yet emergency, warn and count
+    if ((usage && spikeMb > 100) && newState !== 'emergency') {
+      this._spikeCount++;
+      if (this._spikeCount === 1) {
+        const warnMsg = `\x1b[33m[nproxy] V8 heap spike: ${spikeMb.toFixed(0)}MB/tick — next spike triggers emergency\x1b[0m\n`;
+        this._onTransition('spike', spikeMb);
+        process.stderr.write(warnMsg);
+      }
+    } else if (!(usage && spikeMb > 100)) {
+      this._spikeCount = 0;
+    }
 
     if (newState !== this.state) {
       this.state = newState;
@@ -130,12 +250,94 @@ class MemoryMonitor {
   }
 }
 
+function installMonitorTier(mon) {
+  if (mon._tierInstalled) return;
+  const tier = mon.monitorTier;
+  if (tier === 'rss') {
+    mon._tierInstalled = true;
+    return;
+  }
+
+  if (tier === 'split' || tier === 'array') {
+    mon._tierInstalled = true;
+    // Wrap String.prototype.split: mitigate BEFORE executing, detect AFTER
+    const origSplit = String.prototype.split;
+    String.prototype.split = function (...args) {
+      // --- mitigation before split (does not modify split behavior) ---
+      let gcTriggered = false;
+      const stats = mon._v8h || (mon._v8h = require('v8').getHeapStatistics);
+      const h = stats();
+      const ratio = h.used_heap_size / h.heap_size_limit;
+      if (ratio > 0.85) {
+        if (typeof global.gc === 'function') {
+          global.gc();
+          gcTriggered = true;
+        }
+        const warnMsg = `\x1b[33m[nproxy] pre-split heap ${(ratio * 100).toFixed(0)}% — ${gcTriggered ? 'GC done' : 'GC unavailable'}\x1b[0m\n`;
+        process.stderr.write(warnMsg);
+        // Force state change so chunk size shrinks and backpressure engages
+        if (ratio > 0.95 && mon.state !== 'emergency') {
+          if (mon.state === 'critical') {
+            mon.state = 'emergency';
+            mon._onTransition('emergency', process.memoryUsage().rss / 1024 / 1024);
+          } else if (mon.state !== 'critical') {
+            mon.state = 'critical';
+            mon._onTransition('critical', process.memoryUsage().rss / 1024 / 1024);
+          }
+        }
+      }
+      // --- original split (unchanged) ---
+      const before = process.memoryUsage().heapUsed;
+      const result = origSplit.apply(this, args);
+      const delta = (process.memoryUsage().heapUsed - before) / 1024 / 1024;
+      if (delta > 50 && mon.state !== 'emergency') {
+        // split wrapper detects allocation delta but does NOT touch mon._spikeCount.
+        // tick loop handles consecutive spike counting via heapUsed delta between ticks.
+        // If tick already recorded a previous spike (mon._spikeCount>=1), escalate immediately.
+        const warnMsg = `\x1b[33m[nproxy] split() allocated ${delta.toFixed(0)}MB in this call\x1b[0m\n`;
+        process.stderr.write(warnMsg);
+        if (mon._spikeCount >= 1) {
+          const currentHeap = process.memoryUsage().rss / 1024 / 1024;
+          mon.state = 'emergency';
+          mon._onTransition('emergency', currentHeap);
+          mon._spikeCount = 0;
+        }
+      }
+      return result;
+    };
+  }
+
+  if (tier === 'array') {
+    // Wrap Array.prototype methods to instrument memory-growing operations
+    const heapWarnThreshold = 50;
+    const methods = ['push', 'splice', 'unshift', 'concat'];
+    for (const m of methods) {
+      const orig = Array.prototype[m];
+      Array.prototype[m] = function proxyArrayOp(...args) {
+        const addedCount = m === 'splice'
+          ? Math.max(0, args.length - 2)
+          : args.length;
+        if (addedCount > 50000) {
+          const before = process.memoryUsage().heapUsed;
+          const result = orig.apply(this, args);
+          const delta = (process.memoryUsage().heapUsed - before) / 1024 / 1024;
+          if (delta > heapWarnThreshold) {
+            process.stderr.write(`\x1b[33m[nproxy] Array.${m} +${addedCount} items = ${delta.toFixed(0)}MB\x1b[0m\n`);
+          }
+          return result;
+        }
+        return orig.apply(this, args);
+      };
+    }
+  }
+}
+
 // ---- Intercept Mode (node -r nproxy.js) ----
 function intercept() {
   let textMode = process.env.NPROXY_TEXT || 'passthrough';
   let processText = createTextProcessor(textMode);
-  process.env.NPROXY_PRESSURE_MB = process.env.NPROXY_PRESSURE_MB || '512';
-  process.env.NPROXY_CRITICAL_MB = process.env.NPROXY_CRITICAL_MB || '1024';
+  process.env.NPROXY_PRESSURE_MB = process.env.NPROXY_PRESSURE_MB || String(DEFAULT_PRESSURE_MB);
+  process.env.NPROXY_CRITICAL_MB = process.env.NPROXY_CRITICAL_MB || String(DEFAULT_CRITICAL_MB);
 
   // Startup banner: show Nproxy is active with a green badge
   const GREEN = '\x1b[32m';
@@ -149,11 +351,13 @@ function intercept() {
   function injectBanner() {
     if (bannerShown) return '';
     bannerShown = true;
-    const pressure = process.env.NPROXY_PRESSURE_MB;
-    const critical = process.env.NPROXY_CRITICAL_MB;
+    const pressure = process.env.NPROXY_PRESSURE_MB || '512';
+    const critical = process.env.NPROXY_CRITICAL_MB || '1024';
+    const attention = process.env.NPROXY_ATTENTION_MB || '256';
+    const emergency = process.env.NPROXY_EMERGENCY_MB || '1280';
     const icon = `${BOLD}◈${RESET}${GREEN}`;
     const title = ` nproxy memory guard active`;
-    const sub = `pressure=${pressure}MB  critical=${critical}MB`;
+    const sub = `attn=${attention}  press=${pressure}  crit=${critical}  emg=${emergency}MB`;
     const boxW = 56;
     const pad1 = boxW - 1 - (icon.replace(/\x1b\[[\d;]*m/g, '') + title).length;
     const pad2 = boxW - 1 - sub.length;
@@ -170,19 +374,22 @@ function intercept() {
 
   // Chunk size limit per write (0 = no limit)
   let maxChunkBytes = 0;
-  const MAX_CHUNK_NORMAL = 0;       // no limit
+  const MAX_CHUNK_NORMAL = 262144;  // 256KB — always split
+  const MAX_CHUNK_ATTENTION = 262144; // 256KB — start splitting
   const MAX_CHUNK_PRESSURE = 65536; // 64KB
   const MAX_CHUNK_CRITICAL = 4096;  // 4KB
 
   // Frame coalescing: buffer writes within same tick into maxChunkBytes chunks
   let coalesceTimer = null;
-  let coalesceBuf = '';
+  let coalesceBuf = []; // array of parts, joined on flush
+let coalesceLen = 0;
   const COALESCE_MAX = 65536; // flush when buffer exceeds this
 
   function flushCoalesce() {
-    if (coalesceBuf.length === 0) return;
-    const buf = coalesceBuf;
-    coalesceBuf = '';
+    if (coalesceLen === 0) return;
+    const buf = coalesceBuf.join('');
+    coalesceBuf = [];
+    coalesceLen = 0;
     if (!maxChunkBytes || buf.length <= maxChunkBytes) {
       process.stdout._origWrite(buf);
     } else {
@@ -237,8 +444,9 @@ function intercept() {
           return true;
         }
         // Passthrough: coalesce to reduce Ink frame rate
-        coalesceBuf += (typeof chunk === 'string' ? chunk : chunk.toString());
-        if (coalesceBuf.length >= COALESCE_MAX) {
+        coalesceBuf.push(typeof chunk === 'string' ? chunk : chunk.toString());
+        coalesceLen += chunk.length;
+        if (coalesceLen >= COALESCE_MAX) {
           flushCoalesce();
         } else {
           scheduleFlush();
@@ -279,9 +487,39 @@ function intercept() {
   // Coalescing state — flushed on pressure/critical
   let bypassCoalesce = false;
 
+  // Emergency retry counter (closure, safe across multiple emergency transitions)
+  let emergencyRetries = 0;
+
   const monitor = new MemoryMonitor({
+    monitorTier: DEFAULT_MONITOR,
     onTransition: (state, heapMb) => {
-      if (state === 'pressure') {
+      if (state === 'emergency') {
+        // Emergency: force GC (if --expose-gc), stop I/O, last-resort exit
+        maxChunkBytes = MAX_CHUNK_CRITICAL;
+        flushCoalesce();
+        bypassCoalesce = true;
+        process.stderr.write(`\x1b[31;1m[nproxy] EMERGENCY: ${heapMb}MB — forcing recovery\x1b[0m\n`);
+        if (typeof global.gc === 'function') {
+          try { global.gc(); } catch (_) {}
+          // Re-evaluate after GC
+          const postGc = process.memoryUsage().rss / 1024 / 1024;
+          if (postGc < heapMb) {
+            process.stderr.write(`\x1b[32m[nproxy] GC freed ${(heapMb - postGc).toFixed(0)}MB, back to ${postGc.toFixed(0)}MB\x1b[0m\n`);
+          }
+        }
+        // Emergency retry loop: 3 chances then self-terminate
+        // Does NOT kill the child process (principle ②: signals relayed, not generated)
+        emergencyRetries++;
+        if (emergencyRetries > 3) {
+          process.stderr.write(`\x1b[31;1m[nproxy] EMERGENCY: no recovery after 3 retries — exiting\x1b[0m\n`);
+          process.exit(1);
+        }
+      } else if (state === 'critical') {
+        maxChunkBytes = MAX_CHUNK_CRITICAL;
+        flushCoalesce();
+        bypassCoalesce = true;
+        process.stderr.write(`${BLUE}${BOLD}[nproxy]${RESET}${BLUE} memory critical: ${heapMb}MB — throttling I/O${RESET}\n`);
+      } else if (state === 'pressure') {
         maxChunkBytes = MAX_CHUNK_PRESSURE;
         if (textMode === 'passthrough') {
           textMode = 'strip-ansi';
@@ -292,12 +530,13 @@ function intercept() {
           flushCoalesce();
           process.stderr.write(`${YELLOW}[nproxy]${RESET} memory pressure: ${heapMb}MB — throttling I/O\n`);
         }
-      } else if (state === 'critical') {
-        maxChunkBytes = MAX_CHUNK_CRITICAL;
-        flushCoalesce();
-        process.stderr.write(`${BLUE}${BOLD}[nproxy]${RESET}${BLUE} memory saving: ${heapMb}MB — throttling I/O${RESET}\n`);
+      } else if (state === 'attention') {
+        // Attention: mild throttling, start chunk splitting
+        maxChunkBytes = MAX_CHUNK_ATTENTION;
+        process.stderr.write(`${DIM_GREEN}[nproxy]${RESET} memory attention: ${heapMb}MB — monitoring\n`);
       } else {
         maxChunkBytes = MAX_CHUNK_NORMAL;
+        bypassCoalesce = false;
         if (textMode !== process.env.NPROXY_TEXT && textMode !== 'passthrough') {
           textMode = process.env.NPROXY_TEXT || 'passthrough';
           processText = createTextProcessor(textMode);
@@ -307,6 +546,20 @@ function intercept() {
     },
   });
   monitor.start();
+  installMonitorTier(monitor);
+
+  // NearHeapLimitCallback (optional C++ addon — fires BEFORE V8 OOM)
+  try {
+    const nheap = require('./nheap_limit');
+    if (nheap.available) {
+      nheap.register(() => {
+        if (monitor.state !== 'emergency') {
+          monitor.state = 'emergency';
+          monitor._onTransition('emergency', process.memoryUsage().rss / 1024 / 1024);
+        }
+      });
+    }
+  } catch (_) { /* addon not built — tick-only monitoring */ }
 
   // Periodic memory log (NPROXY_MEMLOG=60 for every 60s)
   if (memLogInterval > 0) {
@@ -357,9 +610,14 @@ Preload mode env vars:
   let child;
   if (usePty) {
     // ---- PTY mode: use node-pty for TTY emulation ----
+    // NOTE: --pty requires the "node-pty" package (native addon, requires build tools).
+    // Install: npm install -g node-pty
+    // Windows: prefer WSL2 or use the Rust binary (Nproxy.rs) instead.
     let pty;
     try { pty = require('node-pty'); } catch (e) {
-      process.stderr.write('[nproxy] node-pty not available. Install: npm install -g node-pty\n');
+      process.stderr.write('[nproxy] --pty mode requires node-pty.\n');
+      process.stderr.write('[nproxy] Install: npm install -g node-pty\n');
+      process.stderr.write('[nproxy] Windows: use WSL2 or the Rust binary (Nproxy.rs) instead.\n');
       process.exit(1);
     }
     const env = { ...process.env, TERM: process.env.TERM || 'xterm-256color' };
@@ -375,9 +633,20 @@ Preload mode env vars:
       if (processed.length > 0) process.stdout.write(processed);
     });
     child.onExit(({ exitCode, signal }) => {
-      if (signal) process.kill(process.pid, signal);
+      if (signal) {
+        if (signal === 'SIGKILL') process.exit(128 + 9);
+        else process.kill(process.pid, signal);
+      }
       else process.exit(exitCode);
     });
+    // PTY stdin relay: forward parent stdin -> child
+    if (!process.stdin.isTTY) {
+      // Pipe mode: relay raw bytes
+      process.stdin.on('data', (data) => { child.write(data); });
+    } else {
+      // TTY mode: relay raw bytes (node-pty handles encoding)
+      process.stdin.on('data', (data) => { child.write(data); });
+    }
     // PTY resize
     process.on('SIGWINCH', () => {
       if (process.stdout.columns && process.stdout.rows) {
@@ -391,14 +660,15 @@ Preload mode env vars:
     // This ensures preload intercept works for any Node-based executable.
     // Non-Node binaries (ELF, Windows PE) are spawned directly.
     const isScript = /\.(js|mjs|cjs)$/i.test(cli.app) || (() => {
+      let fd;
       try {
         const fs = require('fs');
         const buf = Buffer.alloc(128);
-        const fd = fs.openSync(cli.app, 'r');
+        fd = fs.openSync(cli.app, 'r');
         fs.readSync(fd, buf, 0, 128, 0);
-        fs.closeSync(fd);
         return buf.includes('node');
       } catch { return false; }
+      finally { if (fd !== undefined) fs.closeSync(fd); }
     })();
     if (isScript) {
       child = spawn(process.execPath, ['-r', __filename, cli.app, ...cli.appArgs], {
@@ -413,10 +683,27 @@ Preload mode env vars:
     }
 
     // Stdout relay with backpressure handling
+    // Memory monitor state: monitoring | attention | pressure | critical | emergency
+    let childMonState = 'monitoring';
+
     child.stdout.pause();
     child.stdout.on('data', (chunk) => {
       const processed = processText(chunk);
       if (processed.length === 0) return;
+      // Under memory pressure: pause child stdout to apply backpressure
+      if (childMonState === 'emergency' || childMonState === 'critical') {
+        child.stdout.pause();
+        const doResume = () => { child.stdout.resume(); };
+        const ok = process.stdout.write(processed, doResume);
+        if (ok) setImmediate(doResume);
+        return;
+      }
+      if (childMonState === 'pressure') {
+        child.stdout.pause();
+        const ok = process.stdout.write(processed, () => { child.stdout.resume(); });
+        if (ok) setImmediate(() => { child.stdout.resume(); });
+        return;
+      }
       const ok = process.stdout.write(processed);
       if (!ok) {
         child.stdout.pause();
@@ -430,6 +717,19 @@ Preload mode env vars:
     child.stderr.on('data', (chunk) => {
       const processed = processText(chunk);
       if (processed.length === 0) return;
+      if (childMonState === 'emergency' || childMonState === 'critical') {
+        child.stderr.pause();
+        const doResume = () => { child.stderr.resume(); };
+        const ok = process.stderr.write(processed, doResume);
+        if (ok) setImmediate(doResume);
+        return;
+      }
+      if (childMonState === 'pressure') {
+        child.stderr.pause();
+        const ok = process.stderr.write(processed, () => { child.stderr.resume(); });
+        if (ok) setImmediate(() => { child.stderr.resume(); });
+        return;
+      }
       const ok = process.stderr.write(processed);
       if (!ok) {
         child.stderr.pause();
@@ -437,6 +737,22 @@ Preload mode env vars:
       }
     });
     child.stderr.resume();
+
+    // Memory monitor: track child RSS via /proc/{pid}/status
+    const childMon = new MemoryMonitor({
+      childPid: child.pid,
+      attentionMb: DEFAULT_ATTENTION_MB,
+      pressureMb: DEFAULT_PRESSURE_MB,
+      criticalMb: DEFAULT_CRITICAL_MB,
+      emergencyMb: DEFAULT_EMERGENCY_MB,
+      onTransition: (state, heapMb) => {
+        childMonState = state;
+        if (process.env.NPROXY_MEMLOG) {
+          process.stderr.write(`[nproxy] childRSS=${childMon.rssMb}MB heap=${heapMb}MB state=${state}\n`);
+        }
+      },
+    });
+    childMon.start();
 
     // Signal relay (pipe mode) — guard for Windows where some signals are undefined
     const signals = ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGUSR1', 'SIGUSR2', 'SIGWINCH'];
@@ -457,10 +773,8 @@ Preload mode env vars:
 if (require.main === module) {
   runCLI();
 }
-// When loaded via -r (preload), intercept() is not auto-called.
-// User must call require('nproxy').intercept() or set NPROXY_AUTO=1
-if (process.env.NPROXY_AUTO === '1') {
-  intercept();
-}
+// When loaded via -r (preload), auto-intercept.
+// NPROXY_AUTO=1 is set by CLI mode spawn.
+intercept();
 
-module.exports = { intercept, MemoryMonitor, createTextProcessor };
+module.exports = { intercept, MemoryMonitor, createTextProcessor, installMonitorTier };

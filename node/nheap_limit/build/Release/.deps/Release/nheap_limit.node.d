@@ -1,0 +1,1 @@
+cmd_Release/nheap_limit.node := ln -f "Release/obj.target/nheap_limit.node" "Release/nheap_limit.node" 2>/dev/null || (rm -rf "Release/nheap_limit.node" && cp -af "Release/obj.target/nheap_limit.node" "Release/nheap_limit.node")
