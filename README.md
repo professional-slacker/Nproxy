@@ -166,7 +166,7 @@ USDT:     0x1b9b7911585189c526d7740ce6c5e1c94c78aa84
 ```
 
 For commercial licensing inquiries (proprietary use, OEM integration, custom development):
-→ [Open a Commercial License Inquiry](https://github.com/professional-slacker/nproxy/issues/new?template=commercial_license.md) (GitHub Issues)
+→ **nproxyinfo@proton.me** or [open a GitHub Issue](https://github.com/professional-slacker/nproxy/issues/new?template=commercial_license.md)
 **Minimum $20+ due to wallet fees.**
 ```
 
