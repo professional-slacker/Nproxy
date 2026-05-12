@@ -67,19 +67,24 @@ If the child blocks on write, nproxy is simply "waiting for reads to resume."
 ### Node — preload mode (`-r`)
 
 ```bash
-NPROXY_AUTO=1 node -r ./node/nproxy.js my-app.js
+node -r ./node/nproxy.js my-app.js
 
 # Environment variables
 NPROXY_TEXT=passthrough|transform|strip-ansi   # text processing mode (default: passthrough)
-NPROXY_AUTO=1                                  # auto-call intercept()
-NPROXY_PRESSURE_MB=512                         # memory throttle threshold (default: 512)
-NPROXY_CRITICAL_MB=1024                        # critical throttle threshold (default: 1024)
+NPROXY_MONITOR=0                               # 0=off, or comma-sep thresholds (default: 256,512,1024,1280)
+NPROXY_DEBUG=1                                 # enable chunk split / debug logs (default: off)
 NPROXY_MEMLOG=60                               # periodic memory log in seconds (0=OFF)
 ```
 
 - `process.stdout.write` hook + memory monitoring with auto mode degradation
+- **256KB chunk splitting** — any write exceeding 256KB is split into `MAX_CHUNK_NORMAL` pieces
+- **5-stage memory guard**: monitoring → attention(256MB) → pressure(512MB) → critical(1024MB) → emergency(1280MB)
+  - pressure: auto-switch to strip-ansi, reduces chunk size to 64KB
+  - critical: chunk size reduced to 4KB, near-emergency
+  - emergency: bypass coalescing, write immediately
+- **V8 NearHeapLimitCallback C++ addon** (`node/nheap_limit/`) — fires before V8 OOM, forces emergency state
 - Coalescing to prevent frame rate loss in interactive CLI frameworks (Ink, React, etc.)
-- Color-coded stderr feedback: pressure (yellow) / critical (blue) / normal (green)
+- Color-coded stderr feedback: attention (yellow) / pressure (red) / critical (blue) / emergency (magenta)
 - Startup banner `◈ nproxy memory guard active` injected on first output
 - Cursor show/hide (`?25h`/`?25l`) preserved in transform/strip-ansi mode
 - Windows: undefined signals guarded with try/catch
@@ -148,7 +153,7 @@ cargo run --release -- --text=strip-ansi -- command [args...]
 
 ---
 
-## Support
+## Licensing & Support
 
 nproxy is free software under the GPL 3.0.  
 If this project saves you time or hassle, donations in crypto are welcome:
@@ -157,6 +162,11 @@ If this project saves you time or hassle, donations in crypto are welcome:
 Bitcoin:  bc1q096t3sc9mndnu94guxcwjqpg7c5qcdv3gf0e0g
 ETH:      0x1b9b7911585189c526d7740ce6c5e1c94c78aa84
 USDT:     0x1b9b7911585189c526d7740ce6c5e1c94c78aa84
+**Minimum $20+ due to wallet fees.**
+```
+
+For commercial licensing inquiries (proprietary use, OEM integration, custom development):
+→ **nproxy@proton.me**
 **Minimum $20+ due to wallet fees.**
 ```
 
