@@ -644,7 +644,7 @@ Preload mode env vars:
         fs.readSync(fd, buf, 0, 128, 0);
         return buf.includes('node');
       } catch { return false; }
-      finally { if (fd !== undefined) fs.closeSync(fd); }
+      finally { if (fd !== undefined) { const fs = require('fs'); fs.closeSync(fd); } }
     })();
     if (isScript) {
       child = spawn(process.execPath, ['-r', __filename, cli.app, ...cli.appArgs], {
