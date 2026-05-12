@@ -160,6 +160,21 @@ cargo run --release -- --text=strip-ansi -- command [args...]
 
 ---
 
+## Known Issues
+
+### Interactive CLI layout artifacts (Node passthrough mode)
+
+When used with Ink/React-based interactive CLIs (e.g. OpenClaude), rare
+rendering artifacts (stray single characters like "s", "e", "g") may appear
+during rapid frame updates (e.g. toggling task panels). The artifacts are
+visual only — no data is lost or corrupted.
+
+**Workaround:** Restart the session. Artifacts do not accumulate over time.
+**Status:** Under investigation — appears to be an Ink write pattern race
+that nproxy's synchronous write pass-through cannot fully eliminate.
+
+---
+
 ## Licensing & Support
 
 nproxy is free software under the GPL 3.0.  
