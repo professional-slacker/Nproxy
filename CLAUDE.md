@@ -1,6 +1,7 @@
 # OpenClaude 許可ポリシー
 - リポジトリのコミットauthorは必ず `professional-slacker <professional-slacker@users.noreply.github.com>` を使用すること。
 - コミット時は `-c user.name=professional-slacker -c user.email=professional-slacker@users.noreply.github.com` を git コマンドに付与するか、事前に git config を設定してからコミットすること。
+- `Co-Authored-By: OpenClaude` 行をコミットメッセージに追加しないこと。
 
 ## 基本方針
 - 拒否リストに記載されていないすべての操作を自動許可
