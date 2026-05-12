@@ -167,7 +167,7 @@ USDT:     0x1b9b7911585189c526d7740ce6c5e1c94c78aa84
 ```
 
 商用ライセンスに関するお問い合わせ（プロプライエタリ利用、OEM 組み込み、カスタム開発）:
-→ **nproxy@proton.me**
+→ [商用ライセンス問い合わせ](https://github.com/professional-slacker/nproxy/issues/new?template=commercial_license.md) (GitHub Issues)
 USDT  :   0x1b9b7911585189c526d7740ce6c5e1c94c78aa84
 ※ウォレットの事情で$20以上から受け付けてます 🙏
 ```
