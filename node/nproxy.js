@@ -381,21 +381,18 @@ function intercept() {
 
   // Frame coalescing: buffer writes within same tick into maxChunkBytes chunks
   let coalesceTimer = null;
-  let coalesceBuf = []; // array of parts, joined on flush
-let coalesceLen = 0;
-  const COALESCE_MAX = 65536; // flush when buffer exceeds this
+  let coalesceBuf = [];
+  let coalesceLen = 0;
+  const COALESCE_MAX = 65536;
 
   function flushCoalesce() {
     if (coalesceLen === 0) return;
     const buf = coalesceBuf.join('');
     coalesceBuf = [];
     coalesceLen = 0;
-    if (!maxChunkBytes || buf.length <= maxChunkBytes) {
-      process.stdout._origWrite(buf);
-    } else {
-      for (let i = 0; i < buf.length; i += maxChunkBytes) {
-        process.stdout._origWrite(buf.slice(i, i + maxChunkBytes));
-      }
+    const parts = splitChunk(buf);
+    for (let i = 0; i < parts.length; i++) {
+      process.stdout._origWrite(parts[i]);
     }
   }
 
@@ -413,6 +410,9 @@ let coalesceLen = 0;
     const parts = [];
     for (let i = 0; i < data.length; i += maxChunkBytes) {
       parts.push(data.slice(i, i + maxChunkBytes));
+    }
+    if (parts.length > 1 && process.env.NPROXY_DEBUG) {
+      process.stderr.write(`[nproxy] chunk: ${data.length}B → ${parts.length}×${maxChunkBytes}B (state=${monitor.state})\n`);
     }
     return parts;
   }
@@ -446,11 +446,7 @@ let coalesceLen = 0;
         // Passthrough: coalesce to reduce Ink frame rate
         coalesceBuf.push(typeof chunk === 'string' ? chunk : chunk.toString());
         coalesceLen += chunk.length;
-        if (coalesceLen >= COALESCE_MAX) {
-          flushCoalesce();
-        } else {
-          scheduleFlush();
-        }
+        scheduleFlush();
         if (callback) setImmediate(callback);
         return true;
       }
@@ -546,6 +542,7 @@ let coalesceLen = 0;
     },
   });
   monitor.start();
+  maxChunkBytes = MAX_CHUNK_NORMAL; // set initial chunk size
   installMonitorTier(monitor);
 
   // NearHeapLimitCallback (optional C++ addon — fires BEFORE V8 OOM)
