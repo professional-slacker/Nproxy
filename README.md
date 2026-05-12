@@ -143,7 +143,7 @@ cargo run --release -- --text=strip-ansi -- command [args...]
 .
 ├── node/           Node.js preload mode implementation
 │   └── nproxy.js
-├── rs/             Rust CLI relay implementation
+├── rs/             Rust CLI relay implementation (PRE-ALPHA — not usable yet)
 │   ├── src/
 │   │   ├── main.rs
 │   │   ├── relay.rs       ← ReadGate + spawn_relay/spawn_text_relay
