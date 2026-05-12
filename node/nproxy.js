@@ -379,31 +379,6 @@ function intercept() {
   const MAX_CHUNK_PRESSURE = 65536; // 64KB
   const MAX_CHUNK_CRITICAL = 4096;  // 4KB
 
-  // Frame coalescing: buffer writes within same tick into maxChunkBytes chunks
-  let coalesceTimer = null;
-  let coalesceBuf = [];
-  let coalesceLen = 0;
-  const COALESCE_MAX = 65536;
-
-  function flushCoalesce() {
-    if (coalesceLen === 0) return;
-    const buf = coalesceBuf.join('');
-    coalesceBuf = [];
-    coalesceLen = 0;
-    const parts = splitChunk(buf);
-    for (let i = 0; i < parts.length; i++) {
-      process.stdout._origWrite(parts[i]);
-    }
-  }
-
-  function scheduleFlush() {
-    if (coalesceTimer) return;
-    coalesceTimer = setImmediate(() => {
-      coalesceTimer = null;
-      flushCoalesce();
-    });
-  }
-
   // Split a buffer/string into maxChunkBytes-sized pieces
   function splitChunk(data) {
     if (!maxChunkBytes || data.length <= maxChunkBytes) return [data];
@@ -443,11 +418,19 @@ function intercept() {
           if (!callback) return true;
           return true;
         }
-        // Passthrough: coalesce to reduce Ink frame rate
-        coalesceBuf.push(typeof chunk === 'string' ? chunk : chunk.toString());
-        coalesceLen += chunk.length;
-        scheduleFlush();
-        if (callback) setImmediate(callback);
+        // Passthrough: write synchronously to preserve Ink frame boundaries.
+        // Ink outputs complete frames in a single write() call — deferring those
+        // to setImmediate can interleave frame data and produce artifacts ("s e" chars).
+        // Only split if the chunk exceeds maxChunkBytes.
+        const s = typeof chunk === 'string' ? chunk : chunk.toString();
+        if (maxChunkBytes > 0 && s.length > maxChunkBytes) {
+          const parts = splitChunk(s);
+          for (let i = 0; i < parts.length; i++) {
+            origStdoutWrite(parts[i], encoding, i === parts.length - 1 ? callback : undefined);
+          }
+        } else {
+          origStdoutWrite(chunk, encoding, callback);
+        }
         return true;
       }
       // Transform/strip-ansi: apply text processing, write immediately (same tick) to
@@ -480,7 +463,7 @@ function intercept() {
   let memLogTimer = null;
   const memLogInterval = memLogSec > 0 ? memLogSec * 1000 : 0;
 
-  // Coalescing state — flushed on pressure/critical
+  // Coalescing state — bypass coalescing under pressure for direct write
   let bypassCoalesce = false;
 
   // Emergency retry counter (closure, safe across multiple emergency transitions)
@@ -492,7 +475,6 @@ function intercept() {
       if (state === 'emergency') {
         // Emergency: force GC (if --expose-gc), stop I/O, last-resort exit
         maxChunkBytes = MAX_CHUNK_CRITICAL;
-        flushCoalesce();
         bypassCoalesce = true;
         process.stderr.write(`\x1b[31;1m[nproxy] EMERGENCY: ${heapMb}MB — forcing recovery\x1b[0m\n`);
         if (typeof global.gc === 'function') {
@@ -512,7 +494,6 @@ function intercept() {
         }
       } else if (state === 'critical') {
         maxChunkBytes = MAX_CHUNK_CRITICAL;
-        flushCoalesce();
         bypassCoalesce = true;
         process.stderr.write(`${BLUE}${BOLD}[nproxy]${RESET}${BLUE} memory critical: ${heapMb}MB — throttling I/O${RESET}\n`);
       } else if (state === 'pressure') {
@@ -520,10 +501,8 @@ function intercept() {
         if (textMode === 'passthrough') {
           textMode = 'strip-ansi';
           processText = createTextProcessor(textMode);
-          flushCoalesce();
           process.stderr.write(`${YELLOW}[nproxy]${RESET} memory pressure: ${heapMb}MB — throttling I/O\n`);
         } else {
-          flushCoalesce();
           process.stderr.write(`${YELLOW}[nproxy]${RESET} memory pressure: ${heapMb}MB — throttling I/O\n`);
         }
       } else if (state === 'attention') {

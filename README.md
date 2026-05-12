@@ -71,7 +71,14 @@ node -r ./node/nproxy.js my-app.js
 
 # Environment variables
 NPROXY_TEXT=passthrough|transform|strip-ansi   # text processing mode (default: passthrough)
-NPROXY_MONITOR=0                               # 0=off, or comma-sep thresholds (default: 256,512,1024,1280)
+  #   passthrough  — pass through unmodified. Recommended for interactive CLIs (Ink, React).
+  #   transform    — prepend timestamp to each line. For batch logging / file output only.
+  #                  NOT recommended for interactive CLIs — timestamps break layout rendering.
+  #   strip-ansi   — strip escape sequences. For log storage, grep-friendly output.
+NPROXY_MONITOR=rss|split|array              # memory monitoring tier (default: rss)
+  #   rss     — lightweight: process.memoryUsage().rss (default)
+  #   split   — rss + heapUsed dual monitoring, more granular
+  #   array   — rss history + surge detection, most accurate but heaviest
 NPROXY_DEBUG=1                                 # enable chunk split / debug logs (default: off)
 NPROXY_MEMLOG=60                               # periodic memory log in seconds (0=OFF)
 ```
