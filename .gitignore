@@ -2,3 +2,8 @@ rs/target/
 *.log
 node/node_modules/
 .bash_aliases
+
+# Internal configs (not for public repo)
+CLAUDE.md
+CODEX.md
+OPENAI.md
