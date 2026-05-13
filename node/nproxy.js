@@ -286,9 +286,15 @@ function installMonitorTier(mon) {
           }
         }
       }
-      // --- original split (unchanged) ---
+      // --- original split ---
       const before = process.memoryUsage().heapUsed;
       const result = origSplit.apply(this, args);
+      // Detach SlicedString references (V8 issue2869): each split element
+      // retains reference to the parent string, preventing GC of the whole.
+      // Concatenate with a space then slice it off to force a real copy.
+      for (let i = 0; i < result.length; i++) {
+        result[i] = (' ' + result[i]).slice(1);
+      }
       const delta = (process.memoryUsage().heapUsed - before) / 1024 / 1024;
       if (delta > 50 && mon.state !== 'emergency') {
         // split wrapper detects allocation delta but does NOT touch mon._spikeCount.
