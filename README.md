@@ -231,6 +231,10 @@ USDT:     0x1b9b7911585189c526d7740ce6c5e1c94c78aa84
 
 For commercial licensing inquiries (proprietary use, OEM integration, custom development):
 → **nproxyinfo@proton.me** or [open a GitHub Issue](https://github.com/professional-slacker/nproxy/issues/new?template=commercial_license.md)
+
+---
+
+> Internal design documents under `doc/` are written in Japanese — they are development notes, not part of the public interface.
 **Minimum $20+ due to wallet fees.**
 ```
 
