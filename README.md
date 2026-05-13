@@ -11,6 +11,48 @@ nproxy command [args...]                 # Rust CLI mode
 
 ---
 
+## Quick Start
+
+```bash
+# 1. Hook into an existing Node.js app (preload -r mode)
+#    nproxy shares the app's process, monitoring memory in real-time.
+NPROXY_TEXT=passthrough node -r ./node/nproxy.js my-app.js
+
+# 2. Launch an AI agent or CLI tool through nproxy (spawn mode)
+#    nproxy runs the tool as a child process and relays I/O.
+./nproxy-run.sh opencode
+
+# 3. Aliases for daily use (add to ~/.bash_aliases)
+alias npro='NPROXY_TEXT=passthrough node -r $HOME/workfolder/Nproxy/node/nproxy.js'
+alias myagent='npro /usr/bin/myagent'
+
+# Then simply:
+myagent
+```
+
+**Preload mode (-r) vs spawn mode (no -r):**
+
+| Mode | What it does | Use when |
+|------|---|---|
+| `node -r ./nproxy.js app` | nproxy runs **inside** the app process | You want to wrap an existing Node.js CLI or TUI app |
+| `./nproxy-run.sh app` | nproxy runs the app as a **child process** | You want to launch any command (Node, Go, Python, etc.) through nproxy |
+
+**Windows support:**
+
+| Environment | Status |
+|---|---|
+| WSL2 | ✅ Works out of the box — full Linux compatibility |
+| Windows native (Node.js) | ⚠️ Spawn mode possible; preload mode limited (no `/dev/tty`) |
+| Windows native (Rust) | 🔄 Planned (Phase 9)
+
+For the preload mode, the `-r` flag tells Node to load nproxy **before** your app starts,
+so nproxy can hook into `process.stdout.write` and set up memory monitoring from the beginning.
+
+> **Alias tip:** Use `$HOME` instead of `~` in alias definitions — `~` may not expand
+> inside single quotes. Example: `alias npro='NPROXY_TEXT=passthrough node -r $HOME/workfolder/Nproxy/node/nproxy.js'`
+
+---
+
 ## Absolute Requirements (Must)
 
 These 3 principles define nproxy regardless of language or implementation.
@@ -96,7 +138,6 @@ NPROXY_MEMLOG=60                               # periodic memory log in seconds 
 - Startup banner `◈ nproxy memory guard active` injected on first output
 - Cursor show/hide (`?25h`/`?25l`) preserved in transform/strip-ansi mode
 - Windows: undefined signals guarded with try/catch
-- **Alias note**: use `$HOME` instead of `~` in alias definitions (`~` may not expand inside single quotes)
 
 ### Rust — CLI relay
 
