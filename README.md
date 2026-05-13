@@ -18,9 +18,9 @@ nproxy command [args...]                 # Rust CLI mode
 #    nproxy shares the app's process, monitoring memory in real-time.
 NPROXY_TEXT=passthrough node -r ./node/nproxy.js my-app.js
 
-# 2. Launch an AI agent or CLI tool through nproxy (spawn mode)
+# 2. Launch any CLI tool through nproxy (spawn mode)
 #    nproxy runs the tool as a child process and relays I/O.
-./nproxy-run.sh opencode
+./nproxy-run.sh my-agent
 
 # 3. Aliases for daily use (add to ~/.bash_aliases)
 alias npro='NPROXY_TEXT=passthrough node -r $HOME/workfolder/Nproxy/node/nproxy.js'
