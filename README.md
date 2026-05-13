@@ -75,10 +75,11 @@ NPROXY_TEXT=passthrough|transform|strip-ansi   # text processing mode (default: 
   #   transform    — prepend timestamp to each line. For batch logging / file output only.
   #                  NOT recommended for interactive CLIs — timestamps break layout rendering.
   #   strip-ansi   — strip escape sequences. For log storage, grep-friendly output.
-NPROXY_MONITOR=rss|split|array              # memory monitoring tier (default: rss)
-  #   rss     — lightweight: process.memoryUsage().rss (default)
-  #   split   — rss + heapUsed dual monitoring, more granular
-  #   array   — rss history + surge detection, most accurate but heaviest
+NPROXY_MONITOR=auto|rss|split|array         # memory monitoring tier (default: auto)
+  #   auto    — starts at rss, auto-upgrades to split (attention+) then array (critical+)
+  #   rss     — lightweight: process.memoryUsage().rss only
+  #   split   — rss + heapUsed dual monitoring + SlicedString detach (V8 issue2869)
+  #   array   — rss + split features + Array proxy for push/unshift/splice
 NPROXY_DEBUG=1                                 # enable chunk split / debug logs (default: off)
 NPROXY_MEMLOG=60                               # periodic memory log in seconds (0=OFF)
 ```
