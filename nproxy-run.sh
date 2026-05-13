@@ -10,4 +10,4 @@
 
 cd "$(dirname "$0")"
 MODE="${1:-passthrough}"
-exec node node/nproxy.js --text="$MODE" /usr/bin/openclaude
+exec node node/nproxy.js "--text=$MODE" /usr/bin/openclaude
