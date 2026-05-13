@@ -1,23 +1,44 @@
 #!/bin/bash
-# nproxy-run.sh — Run OpenClaude through nproxy
+# nproxy-run.sh — Run any command through nproxy
 #
 # Usage:
-#   ./nproxy-run.sh                    # passthrough
-#   ./nproxy-run.sh strip-ansi         # strip ANSI
-#   ./nproxy-run.sh transform          # strip ANSI + NFC normalize
+#   ./nproxy-run.sh [options] <command> [args...]
+#   ./nproxy-run.sh passthrough -- /usr/bin/someapp --flag
 #
-# Without arguments, passes through unmodified to test baseline behavior.
+# Without a text-mode argument, defaults to NPROXY_TEXT=passthrough.
+# If the first argument matches a known mode (passthrough|strip-ansi|transform),
+# it is consumed as --text=. Otherwise passthrough is assumed.
+#
+# Environment:
+#   NPROXY_TEXT    text mode override (takes precedence over positional arg)
 
-cd "$(dirname "$0")" && SCRIPT_DIR="$(pwd -P)"
-MODE="${1:-passthrough}"
-NODE_BIN="$(command -v node)"
-# Resolve OpenClaude binary: follow PATH, common locations
-OC_BIN=""
-for p in $(command -v openclaude 2>/dev/null) /usr/bin/openclaude /usr/local/bin/openclaude; do
-  if [ -x "$p" ]; then OC_BIN="$p"; break; fi
-done
-if [ -z "$OC_BIN" ]; then
-  echo "nproxy-run.sh: openclaude not found in PATH or standard locations" >&2
+MODE="passthrough"
+COMMAND_ARGS=()
+
+if [ "$#" -eq 0 ]; then
+  echo "Usage: $0 [passthrough|strip-ansi|transform] -- <command> [args...]" >&2
   exit 1
 fi
-exec "$NODE_BIN" "$SCRIPT_DIR/node/nproxy.js" "--text=$MODE" "$OC_BIN"
+
+case "$1" in
+  passthrough|strip-ansi|transform)
+    MODE="$1"
+    shift
+    ;;
+esac
+
+# Handle -- separator
+if [ "$1" = "--" ]; then
+  shift
+fi
+
+COMMAND_ARGS=("$@")
+
+if [ "${#COMMAND_ARGS[@]}" -eq 0 ]; then
+  echo "nproxy-run.sh: no command specified" >&2
+  exit 1
+fi
+
+cd "$(dirname "$0")" && SCRIPT_DIR="$(pwd -P)"
+NODE_BIN="$(command -v node)"
+exec "$NODE_BIN" "$SCRIPT_DIR/node/nproxy.js" "--text=$MODE" "${COMMAND_ARGS[@]}"
