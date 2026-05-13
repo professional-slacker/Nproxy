@@ -550,6 +550,23 @@ function intercept() {
     }
     logMem();
   }
+
+  // Crash diagnostics: log uncaught exceptions and unhandled rejections with timestamps
+  if (!process.env._NPROXY_HOOKED) {
+    process.env._NPROXY_HOOKED = '1';
+    process.on('uncaughtException', (err) => {
+      process.stderr.write(`\x1b[31;1m[nproxy] ${new Date().toISOString()} uncaughtException: ${err.message}\x1b[0m\n`);
+      if (err.stack) process.stderr.write(err.stack + '\n');
+      process.exit(1);
+    });
+    process.on('unhandledRejection', (reason) => {
+      const msg = reason instanceof Error ? reason.message : String(reason);
+      const stack = reason instanceof Error ? reason.stack : '';
+      process.stderr.write(`\x1b[31;1m[nproxy] ${new Date().toISOString()} unhandledRejection: ${msg}\x1b[0m\n`);
+      if (stack) process.stderr.write(stack + '\n');
+      process.exit(1);
+    });
+  }
 }
 
 // ---- CLI Mode (spawn child) ----
