@@ -23,7 +23,7 @@ const DEFAULT_PRESSURE_MB = parseInt(process.env.NPROXY_PRESSURE_MB || String(DF
 const DEFAULT_CRITICAL_MB = parseInt(process.env.NPROXY_CRITICAL_MB || String(DFS_CRITICAL_MB), 10);
 const DEFAULT_EMERGENCY_MB = parseInt(process.env.NPROXY_EMERGENCY_MB || String(DFS_EMERGENCY_MB), 10);
 const DEFAULT_TICK_MS = parseInt(process.env.NPROXY_TICK_MS || '200', 10);
-const DEFAULT_MONITOR = process.env.NPROXY_MONITOR || 'rss'; // rss | split | array
+const DEFAULT_MONITOR = process.env.NPROXY_MONITOR || 'auto'; // auto | rss | split | array
 
 // ---- CLI arg parsing ----
 function parseArgs(argv) {
@@ -197,6 +197,29 @@ class MemoryMonitor {
     // In spawn mode, heapUsedMb is 0, so RSS alone drives the state.
     const effectiveMb = heapUsedMb > heapMb ? heapUsedMb : heapMb;
 
+    // Auto-tier promotion: 'auto' mode monitors state transitions and
+    // escalates the monitor tier when sustained pressure is detected.
+    // rss → split (attention+): enables SlicedString detach + pre-split GC
+    // split → array (critical+): enables full Array proxy for push/unshift/splice
+    if (this.monitorTier === 'auto') {
+      if (this.state === 'attention' || this.state === 'pressure' ||
+          this.state === 'critical' || this.state === 'emergency') {
+        if (!this._tierInstalled) {
+          // promote rss → split
+          this.monitorTier = 'split';
+          installMonitorTier(this);
+          process.stderr.write(`\x1b[32;2m[nproxy] monitor auto: rss → split (${this.state})\x1b[0m\n`);
+        } else if (this.state === 'critical' || this.state === 'emergency') {
+          if (!this._arrayProxyInstalled) {
+            // promote split → array
+            this.monitorTier = 'array';
+            installMonitorTier(this);
+            process.stderr.write(`\x1b[32;2m[nproxy] monitor auto: split → array (${this.state})\x1b[0m\n`);
+          }
+        }
+      }
+    }
+
     let newState;
     if ((usage && spikeMb > 100) && this._spikeCount >= 1) {
       newState = 'emergency';
@@ -253,12 +276,14 @@ class MemoryMonitor {
 function installMonitorTier(mon) {
   if (mon._tierInstalled) return;
   const tier = mon.monitorTier;
-  if (tier === 'rss') {
-    mon._tierInstalled = true;
-    return;
-  }
+  const TIER_ORDER = { rss: 0, auto: 0, split: 1, array: 2 };
+  const currentLevel = TIER_ORDER[tier] ?? 0;
 
-  if (tier === 'split' || tier === 'array') {
+  // 'auto' delays installation until auto-promotion in _tick() decides the level
+  if (tier === 'auto') return;
+
+  if (currentLevel >= 1) {
+    // split (same for 'split' and 'auto' after promotion)
     mon._tierInstalled = true;
     // Wrap String.prototype.split: mitigate BEFORE executing, detect AFTER
     const origSplit = String.prototype.split;
@@ -313,7 +338,8 @@ function installMonitorTier(mon) {
     };
   }
 
-  if (tier === 'array') {
+  if (currentLevel >= 2) {
+    mon._arrayProxyInstalled = true;
     // Wrap Array.prototype methods to instrument memory-growing operations
     const heapWarnThreshold = 50;
     const methods = ['push', 'splice', 'unshift', 'concat'];
