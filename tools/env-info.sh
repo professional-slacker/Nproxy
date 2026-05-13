@@ -38,25 +38,6 @@ echo "Platform: $(node -e 'console.log(process.platform)' 2>/dev/null || echo 'N
 echo "Arch: $(node -e 'console.log(process.arch)' 2>/dev/null || echo 'N/A')"
 echo "Path: $(command -v node 2>/dev/null || echo 'not found')"
 
-# ---- openclaude ----
-report "openclaude"
-OC_PATH=""
-for p in /usr/bin/openclaude /usr/local/bin/openclaude; do
-  if [ -x "$p" ]; then
-    OC_PATH="$p"
-    break
-  fi
-done
-if [ -n "$OC_PATH" ]; then
-  echo "Path: $OC_PATH"
-  echo "Version: $("$OC_PATH" --version 2>/dev/null || echo '--version failed')"
-  echo "Shebang: $(head -1 "$OC_PATH" 2>/dev/null || echo 'N/A')"
-  echo "Size: $(wc -c < "$OC_PATH" 2>/dev/null) bytes"
-  echo "Realpath: $(readlink -f "$OC_PATH" 2>/dev/null || echo 'N/A')"
-else
-  echo "Path: not found"
-fi
-
 # ---- nproxy ----
 report "nproxy"
 if [ -d "$(dirname "$0")/.." ]; then
