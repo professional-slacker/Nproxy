@@ -373,11 +373,11 @@ function intercept() {
       `  ${DIM_GREEN}║ ${sub}${' '.repeat(pad2)}${DIM_GREEN}║${RESET}\n` +
       `  ${DIM_GREEN}╚${'═'.repeat(boxW)}╝${RESET}\n`;
   }
-  // Fallback: if banner anchor is never seen, inject after 3s
+  // Fallback: if banner anchor is never seen, inject after 1s
   const bannerTimer = setTimeout(() => {
     const banner = injectBanner();
     if (banner) process.stderr.write(banner);
-  }, 3000);
+  }, 100);
 
   // Chunk size limit per write (0 = no limit)
   let maxChunkBytes = 0;
