@@ -603,12 +603,14 @@ function intercept() {
       }
     });
 
-    // Check heap limit and warn if low
+    // Check heap limit and warn on first attention tick; don't guess a timer delay
     const heapLimitMb = require('v8').getHeapStatistics().heap_size_limit / 1024 / 1024;
     if (heapLimitMb < 2048) {
-      setTimeout(() => {
+      const warnLowHeap = () => {
         process.stderr.write(`\x1b[33m[nproxy] Warning: V8 heap limit is low (${heapLimitMb.toFixed(0)}MB). Consider --max-old-space-size=4096\x1b[0m\n`);
-      }, 5100);
+      };
+      // Emit at the next available tick (immediate, not 5s later)
+      setImmediate(warnLowHeap);
     }
   }
 }
