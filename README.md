@@ -164,10 +164,10 @@ cargo run --release -- --text=strip-ansi -- command [args...]
 
 ### Interactive CLI layout artifacts (Node passthrough mode)
 
-When used with Ink/React-based interactive CLIs (e.g. OpenClaude), rare
-rendering artifacts (stray single characters like "s", "e", "g") may appear
-during rapid frame updates (e.g. toggling task panels). The artifacts are
-visual only — no data is lost or corrupted.
+When used with Ink/React-based interactive CLIs, rare rendering artifacts
+(stray single characters like "s", "e", "g") may appear during rapid frame
+updates (e.g. toggling panels). The artifacts are visual only — no data is
+lost or corrupted.
 
 **Workaround:** Restart the session. Artifacts do not accumulate over time.
 **Status:** Under investigation — appears to be an Ink write pattern race
