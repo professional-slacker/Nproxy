@@ -334,6 +334,13 @@ function installMonitorTier(mon) {
 
 // ---- Intercept Mode (node -r nproxy.js) ----
 function intercept() {
+  // Delayed stderr "active" indicator (safe for TUI apps)
+  const dimGreen = '\x1b[32;2m', reset = '\x1b[0m';
+  setTimeout(() => {
+    const rssMb = (process.memoryUsage().rss / 1024 / 1024).toFixed(0);
+    process.stderr.write(`${dimGreen}[nproxy]${reset} active (pid=${process.pid}, rss=${rssMb}MB)\n`);
+  }, 5000);
+
   let textMode = process.env.NPROXY_TEXT || 'passthrough';
   let processText = createTextProcessor(textMode);
   process.env.NPROXY_PRESSURE_MB = process.env.NPROXY_PRESSURE_MB || String(DEFAULT_PRESSURE_MB);
