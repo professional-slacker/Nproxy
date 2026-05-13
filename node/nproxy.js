@@ -340,6 +340,9 @@ function installMonitorTier(mon) {
 
 // ---- Intercept Mode (node -r nproxy.js) ----
 function intercept() {
+  // Skip if already running under nproxy (e.g. Node wrapper → spawnSync → Go binary)
+  if (process.env.NPROXY_AUTO === '1') return;
+
   // Delayed stderr "active" indicator (safe for TUI apps)
   const dimGreen = '\x1b[32;2m', reset = '\x1b[0m';
   setTimeout(() => {
@@ -567,18 +570,46 @@ function intercept() {
   // Crash diagnostics: log uncaught exceptions and unhandled rejections with timestamps
   if (!process.env._NPROXY_HOOKED) {
     process.env._NPROXY_HOOKED = '1';
+
+    const logCrash = (type, err) => {
+      const timestamp = new Date().toISOString();
+      const msg = err instanceof Error ? err.message : String(err);
+      const stack = err instanceof Error ? err.stack : '';
+      const mem = process.memoryUsage();
+      const v8 = require('v8');
+      const heapStats = v8.getHeapStatistics();
+
+      const report = [
+        `\n\x1b[31;1m[nproxy] ${timestamp} ${type}: ${msg}\x1b[0m`,
+        `  RSS: ${(mem.rss / 1024 / 1024).toFixed(1)}MB`,
+        `  Heap: ${(mem.heapUsed / 1024 / 1024).toFixed(1)} / ${(mem.heapTotal / 1024 / 1024).toFixed(1)}MB (limit: ${(heapStats.heap_size_limit / 1024 / 1024).toFixed(1)}MB)`,
+        `  External: ${(mem.external / 1024 / 1024).toFixed(1)}MB`,
+        stack ? `  Stack:\n${stack}` : ''
+      ].filter(Boolean).join('\n');
+
+      process.stderr.write(report + '\n');
+    };
+
     process.on('uncaughtException', (err) => {
-      process.stderr.write(`\x1b[31;1m[nproxy] ${new Date().toISOString()} uncaughtException: ${err.message}\x1b[0m\n`);
-      if (err.stack) process.stderr.write(err.stack + '\n');
-      process.exit(1);
+      logCrash('uncaughtException', err);
     });
     process.on('unhandledRejection', (reason) => {
-      const msg = reason instanceof Error ? reason.message : String(reason);
-      const stack = reason instanceof Error ? reason.stack : '';
-      process.stderr.write(`\x1b[31;1m[nproxy] ${new Date().toISOString()} unhandledRejection: ${msg}\x1b[0m\n`);
-      if (stack) process.stderr.write(stack + '\n');
-      process.exit(1);
+      logCrash('unhandledRejection', reason);
     });
+    process.on('exit', (code) => {
+      if (code !== 0 && code !== null) {
+        const rss = (process.memoryUsage().rss / 1024 / 1024).toFixed(1);
+        process.stderr.write(`\x1b[31m[nproxy] process exit with code ${code} (final RSS: ${rss}MB)\x1b[0m\n`);
+      }
+    });
+
+    // Check heap limit and warn if low
+    const heapLimitMb = require('v8').getHeapStatistics().heap_size_limit / 1024 / 1024;
+    if (heapLimitMb < 2048) {
+      setTimeout(() => {
+        process.stderr.write(`\x1b[33m[nproxy] Warning: V8 heap limit is low (${heapLimitMb.toFixed(0)}MB). Consider --max-old-space-size=4096\x1b[0m\n`);
+      }, 5100);
+    }
   }
 }
 
