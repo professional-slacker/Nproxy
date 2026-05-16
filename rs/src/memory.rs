@@ -10,8 +10,9 @@ pub enum MemState {
     Critical,
 }
 
-/// Reads the current RSS from /proc/<pid>/status (VmRSS in kB).
-fn read_vmrss_kb(pid: u32) -> io::Result<u64> {
+/// Reads the current RSS in kB. Platform-specific implementation.
+#[cfg(unix)]
+fn read_rss_kb(pid: u32) -> io::Result<u64> {
     let path = format!("/proc/{}/status", pid);
     let content = std::fs::read_to_string(&path)?;
     for line in content.lines() {
@@ -25,6 +26,42 @@ fn read_vmrss_kb(pid: u32) -> io::Result<u64> {
         }
     }
     Err(io::Error::new(io::ErrorKind::NotFound, format!("VmRSS not found in {}", path)))
+}
+
+/// Reads the current RSS in kB using Windows API.
+#[cfg(windows)]
+fn read_rss_kb(pid: u32) -> io::Result<u64> {
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ};
+    use windows_sys::Win32::System::ProcessStatus::GetProcessMemoryInfo;
+    use windows_sys::Win32::Foundation::CloseHandle;
+
+    // Use PROCESS_QUERY_INFORMATION | PROCESS_VM_READ for GetProcessMemoryInfo
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, pid) };
+    if handle == 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let mut mem_count: windows_sys::Win32::System::ProcessStatus::PROCESS_MEMORY_COUNTERS_EX = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<windows_sys::Win32::System::ProcessStatus::PROCESS_MEMORY_COUNTERS_EX>() as u32;
+    mem_count.cb = size;
+
+    let ok = unsafe {
+        GetProcessMemoryInfo(
+            handle,
+            &mut mem_count as *mut _ as *mut windows_sys::Win32::System::ProcessStatus::PROCESS_MEMORY_COUNTERS,
+            size,
+        )
+    };
+
+    unsafe { CloseHandle(handle); }
+
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    // WorkingSetSize is in bytes, convert to kB
+    let rss_bytes = mem_count.WorkingSetSize as u64;
+    Ok(rss_bytes / 1024)
 }
 
 /// Memory-aware policy that tracks RSS and drives state transitions.
@@ -75,7 +112,7 @@ impl MemoryPolicy {
 
     /// Poll RSS and update state. Returns true if state changed.
     pub fn tick(&mut self) -> bool {
-        let rss_kb = match read_vmrss_kb(self.pid) {
+        let rss_kb = match read_rss_kb(self.pid) {
             Ok(v) => v,
             Err(e) => {
                 debug!("MemoryPolicy: failed to read VmRSS: {}", e);

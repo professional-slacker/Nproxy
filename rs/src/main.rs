@@ -1,12 +1,13 @@
+#[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::process::ExitCode;
 use std::sync::Arc;
 use clap::Parser;
-use tokio::signal::unix::{signal, SignalKind};
 use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
 
-/// Send a signal to a child process by PID. Used in signal relay.
+/// Send a signal to a child process. Platform-specific.
+#[cfg(unix)]
 fn kill_child(pid: u32, sig: i32) {
     if pid == 0 {
         return;
@@ -16,6 +17,27 @@ fn kill_child(pid: u32, sig: i32) {
     if rc != 0 {
         let err = std::io::Error::last_os_error();
         debug!("kill(pid={}, sig={}) failed: {}", pid, sig, err);
+    }
+}
+
+/// Terminate a child process on Windows using TerminateProcess.
+#[cfg(windows)]
+fn kill_child(pid: u32, _sig: i32) {
+    use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+    use windows_sys::Win32::Foundation::CloseHandle;
+
+    if pid == 0 {
+        return;
+    }
+    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
+    if handle == 0 {
+        debug!("OpenProcess(pid={}) failed: {:?}", pid, std::io::Error::last_os_error());
+        return;
+    }
+    let ok = unsafe { TerminateProcess(handle, 1) };
+    unsafe { CloseHandle(handle); }
+    if ok == 0 {
+        debug!("TerminateProcess(pid={}) failed: {:?}", pid, std::io::Error::last_os_error());
     }
 }
 
@@ -87,21 +109,45 @@ async fn main() -> ExitCode {
     }
 
     // --- Spawn child ---
+    #[cfg(unix)]
     let use_pty = cli.pty;
+    #[cfg(windows)]
+    let use_pty = false; // PTY not supported on Windows
+
+    if use_pty && cfg!(not(unix)) {
+        eprintln!("nproxy: --pty is only supported on Unix systems");
+        return ExitCode::from(1);
+    }
+
     let mut child: tokio::process::Child;
+    #[cfg(unix)]
     let mut pty_master: Option<std::fs::File> = None;
 
-    if use_pty {
-        let (c, master_fd) = match child::spawn_pty(&app, &app_args) {
-            Ok((c, fd)) => (c, fd),
-            Err(e) => {
-                eprintln!("nproxy: failed to spawn child with pty '{}': {}", app, e);
-                return ExitCode::from(1);
-            }
-        };
-        child = c;
-        pty_master = Some(master_fd);
-    } else {
+    #[cfg(unix)]
+    {
+        if use_pty {
+            let (c, master_fd) = match child::spawn_pty(&app, &app_args) {
+                Ok((c, fd)) => (c, fd),
+                Err(e) => {
+                    eprintln!("nproxy: failed to spawn child with pty '{}': {}", app, e);
+                    return ExitCode::from(1);
+                }
+            };
+            child = c;
+            pty_master = Some(master_fd);
+        } else {
+            child = match child::spawn(&app, &app_args) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("nproxy: failed to spawn child '{}': {}", app, e);
+                    return ExitCode::from(1);
+                }
+            };
+        }
+    }
+
+    #[cfg(windows)]
+    {
         child = match child::spawn(&app, &app_args) {
             Ok(c) => c,
             Err(e) => {
@@ -135,49 +181,67 @@ async fn main() -> ExitCode {
         ))))
     };
 
-    // --- Signal relay: forward SIGINT/SIGTERM/SIGHUP to child ---
-    let mut sigint = match signal(SignalKind::interrupt()) {
-        Ok(s) => s,
-        Err(e) => {
-            warn!("failed to set up SIGINT handler: {}", e);
-            return ExitCode::from(1);
-        }
-    };
-    let mut sigterm = match signal(SignalKind::terminate()) {
-        Ok(s) => s,
-        Err(e) => {
-            warn!("failed to set up SIGTERM handler: {}", e);
-            return ExitCode::from(1);
-        }
-    };
-    let mut sighup = match signal(SignalKind::hangup()) {
-        Ok(s) => s,
-        Err(e) => {
-            warn!("failed to set up SIGHUP handler: {}", e);
-            return ExitCode::from(1);
-        }
-    };
-    let _signal_join = tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                _ = sigint.recv() => {
-                    debug!("received SIGINT, forwarding to child pid={}", child_pid);
-                    kill_child(child_pid, libc::SIGINT);
-                }
-                _ = sigterm.recv() => {
-                    debug!("received SIGTERM, forwarding to child pid={}", child_pid);
-                    kill_child(child_pid, libc::SIGTERM);
-                }
-                _ = sighup.recv() => {
-                    debug!("received SIGHUP, forwarding to child pid={}", child_pid);
-                    kill_child(child_pid, libc::SIGHUP);
+    // --- Signal relay ---
+    #[cfg(unix)]
+    let _signal_join = {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigint = match signal(SignalKind::interrupt()) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("failed to set up SIGINT handler: {}", e);
+                return ExitCode::from(1);
+            }
+        };
+        let mut sigterm = match signal(SignalKind::terminate()) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("failed to set up SIGTERM handler: {}", e);
+                return ExitCode::from(1);
+            }
+        };
+        let mut sighup = match signal(SignalKind::hangup()) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("failed to set up SIGHUP handler: {}", e);
+                return ExitCode::from(1);
+            }
+        };
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = sigint.recv() => {
+                        debug!("received SIGINT, forwarding to child pid={}", child_pid);
+                        kill_child(child_pid, libc::SIGINT);
+                    }
+                    _ = sigterm.recv() => {
+                        debug!("received SIGTERM, forwarding to child pid={}", child_pid);
+                        kill_child(child_pid, libc::SIGTERM);
+                    }
+                    _ = sighup.recv() => {
+                        debug!("received SIGHUP, forwarding to child pid={}", child_pid);
+                        kill_child(child_pid, libc::SIGHUP);
+                    }
                 }
             }
-        }
-    });
+        })
+    };
 
+    #[cfg(windows)]
+    let _signal_join = {
+        // On Windows, Ctrl+C is the primary signal. SIGTERM/SIGHUP don't exist.
+        // We use TerminateProcess in kill_child for forced termination.
+        tokio::spawn(async move {
+            loop {
+                tokio::signal::ctrl_c().await.ok();
+                debug!("received Ctrl+C, terminating child pid={}", child_pid);
+                kill_child(child_pid, 0);
+            }
+        })
+    };
+
+    // --- PTY mode (Unix only) ---
+    #[cfg(unix)]
     if use_pty {
-        // --- PTY mode: bidirectional relay via master fd ---
         // Convert std::fs::File to tokio::fs::File for async I/O.
         // Dup the fd so we have separate read/write handles.
         let master_file = pty_master.take().expect("pty_master should be Some");
