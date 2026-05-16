@@ -7,3 +7,7 @@ node/node_modules/
 CLAUDE.md
 CODEX.md
 OPENAI.md
+INTERNAL.md
+IO_ORDERING_INVESTIGATION.md
+DESIGN.md
+STATUS.md
