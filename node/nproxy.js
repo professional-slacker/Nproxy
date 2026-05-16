@@ -143,11 +143,8 @@ function createTextProcessor(mode) {
 function createInputProcessor(mode) {
   // 入力変換は基本的にpassthrough
   // 将来的に入力変換が必要になった場合に備えて用意
-  if (!mode || mode === 'passthrough' || mode === 'off') {
-    return (chunk) => chunk;
-  }
-  // 入力に対する変換は現在は未実装
-  // 必要に応じて追加
+  // 入力変換はpassthrough固定。
+  // 将来的に入力変換が必要になった場合に備えて用意。
   return (chunk) => chunk;
 }
 
@@ -314,11 +311,16 @@ class MemoryMonitor {
     }
 
     if (newState !== this.state) {
-      this.state = newState;
-      this._onTransition(newState, heapMb);
+      this._forceTransition(newState, heapMb);
     }
 
     this._timer = setTimeout(() => this._tick(), this.tickMs).unref();
+  }
+
+  // Force a state transition (used by installMonitorTier for emergency escalation)
+  _forceTransition(newState, heapMb) {
+    this.state = newState;
+    this._onTransition(newState, heapMb);
   }
 }
 
@@ -351,12 +353,11 @@ function installMonitorTier(mon) {
         process.stderr.write(warnMsg);
         // Force state change so chunk size shrinks and backpressure engages
         if (ratio > 0.95 && mon.state !== 'emergency') {
+          const rssMb = process.memoryUsage().rss / 1024 / 1024;
           if (mon.state === 'critical') {
-            mon.state = 'emergency';
-            mon._onTransition('emergency', process.memoryUsage().rss / 1024 / 1024);
-          } else if (mon.state !== 'critical') {
-            mon.state = 'critical';
-            mon._onTransition('critical', process.memoryUsage().rss / 1024 / 1024);
+            mon._forceTransition('emergency', rssMb);
+          } else {
+            mon._forceTransition('critical', rssMb);
           }
         }
       }
@@ -378,8 +379,7 @@ function installMonitorTier(mon) {
         process.stderr.write(warnMsg);
         if (mon._spikeCount >= 1) {
           const currentHeap = process.memoryUsage().rss / 1024 / 1024;
-          mon.state = 'emergency';
-          mon._onTransition('emergency', currentHeap);
+          mon._forceTransition('emergency', currentHeap);
           mon._spikeCount = 0;
         }
       }
@@ -844,16 +844,10 @@ Preload mode env vars:
         if (signal === 'SIGKILL') process.exit(128 + 9);
         else process.kill(process.pid, signal);
       }
-      else process.exit(exitCode);
+      else process.exit(Number(exitCode) || 0);
     });
-    // PTY stdin relay: forward parent stdin -> child
-    if (!process.stdin.isTTY) {
-      // Pipe mode: relay raw bytes
-      process.stdin.on('data', (data) => { child.write(data); });
-    } else {
-      // TTY mode: relay raw bytes (node-pty handles encoding)
-      process.stdin.on('data', (data) => { child.write(data); });
-    }
+    // PTY stdin relay: forward parent stdin -> child (node-pty handles encoding)
+    process.stdin.on('data', (data) => { child.write(data); });
     // PTY resize
     process.on('SIGWINCH', () => {
       if (process.stdout.columns && process.stdout.rows) {
@@ -878,7 +872,8 @@ Preload mode env vars:
       finally { if (fd !== undefined) { const fs = require('fs'); fs.closeSync(fd); } }
     })();
     if (isScript) {
-      child = spawn(process.execPath, ['-r', __filename, cli.app, ...cli.appArgs], {
+      // --expose-gc: enable global.gc() for emergency memory recovery
+      child = spawn(process.execPath, ['--expose-gc', '-r', __filename, cli.app, ...cli.appArgs], {
         stdio: ['pipe', 'pipe', 'pipe'],
         env: { ...process.env, NPROXY_AUTO: '1', NPROXY_TEXT: textMode },
       });
@@ -934,9 +929,8 @@ Preload mode env vars:
         if (childMonState === 'emergency' || childMonState === 'critical') {
           const ok = process.stdout.write(processed);
           if (!ok) {
-            // Wait for drain before continuing
             process.stdout.once('drain', () => {
-              // Resume reading after drain
+              child.stdout.read(0);
             });
             break;
           }
@@ -945,7 +939,9 @@ Preload mode env vars:
         if (childMonState === 'pressure') {
           const ok = process.stdout.write(processed);
           if (!ok) {
-            process.stdout.once('drain', () => {});
+            process.stdout.once('drain', () => {
+              child.stdout.read(0);
+            });
             break;
           }
           continue;
@@ -971,7 +967,9 @@ Preload mode env vars:
         if (childMonState === 'emergency' || childMonState === 'critical') {
           const ok = process.stderr.write(processed);
           if (!ok) {
-            process.stderr.once('drain', () => {});
+            process.stderr.once('drain', () => {
+              child.stderr.read(0);
+            });
             break;
           }
           continue;
@@ -979,7 +977,9 @@ Preload mode env vars:
         if (childMonState === 'pressure') {
           const ok = process.stderr.write(processed);
           if (!ok) {
-            process.stderr.once('drain', () => {});
+            process.stderr.once('drain', () => {
+              child.stderr.read(0);
+            });
             break;
           }
           continue;
