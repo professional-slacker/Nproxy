@@ -874,6 +874,39 @@ Preload mode env vars:
       });
     }
 
+    // Set memory limit for child process (Linux/macOS)
+    // Uses prlimit --as (address space / virtual memory limit).
+    // Not RSS-based, but provides a safety net against runaway allocation.
+    if (process.platform !== 'win32' && child.pid) {
+      try {
+        const { execFileSync } = require('child_process');
+        const memLimitMb = parseInt(process.env.NPROXY_CHILD_MEM_LIMIT_MB || '1024', 10);
+        const memLimitBytes = memLimitMb * 1024 * 1024;
+        execFileSync('prlimit', [`--as=${memLimitBytes}`, `--pid`, `${child.pid}`], { stdio: 'ignore' });
+        process.stderr.write(`[nproxy] child memory limit set to ${memLimitMb}MB (address space)\n`);
+      } catch (e) {
+        // prlimit may not be available or may fail (e.g., permission denied)
+        // Continue without memory limit
+        process.stderr.write(`[nproxy] warning: could not set child memory limit: ${e.message}\n`);
+      }
+    }
+
+    // Adjust OOM score for child process (Linux only)
+    if (process.platform === 'linux' && child.pid) {
+      try {
+        const fs = require('fs');
+        // Set OOM score adjustment to -500 (less likely to be killed)
+        // Range: -1000 (never kill) to 1000 (always kill)
+        const oomScoreAdj = parseInt(process.env.NPROXY_OOM_SCORE_ADJ || '-500', 10);
+        fs.writeFileSync(`/proc/${child.pid}/oom_score_adj`, String(oomScoreAdj));
+        process.stderr.write(`[nproxy] child OOM score adjusted to ${oomScoreAdj}\n`);
+      } catch (e) {
+        // /proc may not be available or permission denied
+        // Continue without OOM score adjustment
+        process.stderr.write(`[nproxy] warning: could not adjust OOM score: ${e.message}\n`);
+      }
+    }
+
     // Stdin relay: forward parent stdin -> child stdin
     // This ensures nproxy intercepts all IO (not just stdout/stderr)
     process.stdin.on('data', (chunk) => {
