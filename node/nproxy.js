@@ -57,7 +57,7 @@ const DEFAULT_MONITOR = process.env.NPROXY_MONITOR || 'auto'; // auto | rss | sp
 
 // ---- CLI arg parsing ----
 function parseArgs(argv) {
-  const out = { text: null, textLog: null, pty: false, app: null, appArgs: [] };
+  const out = { text: null, textLog: null, pty: false, help: false, app: null, appArgs: [] };
   let i = 0;
   for (; i < argv.length; i++) {
     const a = argv[i];
@@ -67,6 +67,7 @@ function parseArgs(argv) {
     if (a.startsWith('--text-log=')) { out.textLog = a.slice(11); continue; }
     if (a === '--pty') { out.pty = true; continue; }
     if (a === '--no-pty') { out.pty = false; continue; }
+    if (a === '--help' || a === '-h') { out.help = true; continue; }
     out.app = a;
     out.appArgs = argv.slice(i + 1);
     break;
@@ -770,7 +771,7 @@ function intercept() {
 // ---- CLI Mode (spawn child) ----
 function runCLI() {
   const cli = parseArgs(process.argv.slice(2));
-  if (!cli.app) {
+  if (cli.help || !cli.app) {
     const myself = process.argv[1];
     process.stderr.write(`nproxy — Runtime I/O Proxy
 
