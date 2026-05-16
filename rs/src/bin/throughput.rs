@@ -76,7 +76,7 @@ fn bench_nproxy(args: &[&str], child_cmd: &str, child_args: &[&str], data: &[u8]
     });
 
     write_handle.join().unwrap();
-    let out = read_handle.join().unwrap();
+    let _out = read_handle.join().unwrap();
     let _status = child.wait().expect("failed to wait");
 
     let elapsed = start.elapsed();
