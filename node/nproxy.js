@@ -875,23 +875,6 @@ Preload mode env vars:
       });
     }
 
-    // Set memory limit for child process (Linux/macOS)
-    // Uses prlimit --as (address space / virtual memory limit).
-    // Not RSS-based, but provides a safety net against runaway allocation.
-    if (process.platform !== 'win32' && child.pid) {
-      try {
-        const { execFileSync } = require('child_process');
-        const memLimitMb = parseInt(process.env.NPROXY_CHILD_MEM_LIMIT_MB || '1024', 10);
-        const memLimitBytes = memLimitMb * 1024 * 1024;
-        execFileSync('prlimit', [`--as=${memLimitBytes}`, `--pid`, `${child.pid}`], { stdio: 'ignore' });
-        process.stderr.write(`[nproxy] child memory limit set to ${memLimitMb}MB (address space)\n`);
-      } catch (e) {
-        // prlimit may not be available or may fail (e.g., permission denied)
-        // Continue without memory limit
-        process.stderr.write(`[nproxy] warning: could not set child memory limit: ${e.message}\n`);
-      }
-    }
-
     // Adjust OOM score for child process (Linux only)
     if (process.platform === 'linux' && child.pid) {
       try {
