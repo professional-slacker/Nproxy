@@ -901,7 +901,10 @@ Preload mode env vars:
       } catch (e) {
         // /proc may not be available or permission denied
         // Continue without OOM score adjustment
-        process.stderr.write(`[nproxy] warning: could not adjust OOM score: ${e.message}\n`);
+        // Silently ignore EACCES (no root) — only warn on unexpected errors
+        if (!e.message.includes('EACCES')) {
+          process.stderr.write(`[nproxy] warning: could not adjust OOM score: ${e.message}\n`);
+        }
       }
     }
 
