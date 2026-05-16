@@ -86,7 +86,10 @@ const TEXT_MODES = ['passthrough', 'strip-ansi', 'transform'];
 
 function createTextProcessor(mode) {
   if (!mode || mode === 'passthrough' || mode === 'off') {
-    return (chunk) => chunk;
+    // Passthrough: only strip VTE/terminal status responses that leak through PTY
+    // DCS responses (\x1bP...\x1b\\), DA1 responses (\x1b[?...c), Focus In (\x1b[I)
+    const vteRe = /\x1b\[[\x20-\x3f]*[\d;]*c|\x1b\[I|\x1bP[^\\]*\x1b\\/g;
+    return (chunk) => chunk.replace(vteRe, '');
   }
 
   // Ink needs: SGR (m), cursor move/position (A B C D G H f), erase (J K),
