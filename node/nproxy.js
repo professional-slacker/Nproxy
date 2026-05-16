@@ -804,21 +804,29 @@ Preload mode env vars:
   const processText = createTextProcessor(textMode);
   const processInput = createInputProcessor(textMode);
 
-  const usePty = cli.pty || process.env.NPROXY_PTY === '1';
+  // PTY mode: try PTY by default, fall back to pipe if node-pty is not available.
+  // --pty forces PTY (fail if not available), --no-pty forces pipe.
+  const explicitPty = cli.pty || process.env.NPROXY_PTY === '1';
+  const explicitNoPty = process.argv.includes('--no-pty') || process.env.NPROXY_PTY === '0';
+
+  let usePty = !explicitNoPty; // default: try PTY
+  let pty;
+  if (usePty) {
+    try { pty = require('node-pty'); } catch (e) {
+      if (explicitPty) {
+        process.stderr.write('[nproxy] --pty mode requires node-pty.\n');
+        process.stderr.write('[nproxy] Install: npm install -g node-pty\n');
+        process.stderr.write('[nproxy] Windows: use WSL2 or the Rust binary (Nproxy.rs) instead.\n');
+        process.exit(1);
+      }
+      usePty = false; // fall back to pipe
+      process.stderr.write('[nproxy] node-pty not available, using pipe mode\n');
+    }
+  }
 
   let child;
   if (usePty) {
     // ---- PTY mode: use node-pty for TTY emulation ----
-    // NOTE: --pty requires the "node-pty" package (native addon, requires build tools).
-    // Install: npm install -g node-pty
-    // Windows: prefer WSL2 or use the Rust binary (Nproxy.rs) instead.
-    let pty;
-    try { pty = require('node-pty'); } catch (e) {
-      process.stderr.write('[nproxy] --pty mode requires node-pty.\n');
-      process.stderr.write('[nproxy] Install: npm install -g node-pty\n');
-      process.stderr.write('[nproxy] Windows: use WSL2 or the Rust binary (Nproxy.rs) instead.\n');
-      process.exit(1);
-    }
     const env = { ...process.env, TERM: process.env.TERM || 'xterm-256color' };
     child = pty.spawn(cli.app, cli.appArgs, {
       name: env.TERM,
