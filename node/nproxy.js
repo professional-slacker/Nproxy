@@ -13,7 +13,37 @@
 //   3. Protocol layer is outside nproxy
 // ============================================================
 
-// ---- Default thresholds (env only, never hardcode magic numbers) ----
+// ---- TRACE logging (internal, non-public) ----
+let traceLogPath = null;
+let traceEnabled = false;
+
+function initTraceLogger() {
+  if (process.env.NPROXY_TRACE_WRITE) {
+    traceEnabled = true;
+    if (process.env.NPROXY_TRACE_LOG) {
+      traceLogPath = process.env.NPROXY_TRACE_LOG;
+    } else {
+      traceLogPath = require('path').join(process.cwd(), 'nproxy_trace.log');
+    }
+    // Touch the file
+    try {
+      require('fs').appendFileSync(traceLogPath, '');
+    } catch (e) {
+      // ignore
+    }
+  }
+}
+
+function traceLog(line) {
+  if (!traceEnabled || !traceLogPath) return;
+  try {
+    require('fs').appendFileSync(traceLogPath, line + '\n');
+  } catch (e) {
+    // ignore write errors
+  }
+}
+
+initTraceLogger();
 const DFS_ATTENTION_MB = 256;
 const DFS_PRESSURE_MB = 512;
 const DFS_CRITICAL_MB = 1024;
@@ -99,6 +129,18 @@ function createTextProcessor(mode) {
       return stripAnsi(chunk).normalize('NFC');
     };
   }
+  return (chunk) => chunk;
+}
+
+// ---- Input processing helpers ----
+function createInputProcessor(mode) {
+  // 入力変換は基本的にpassthrough
+  // 将来的に入力変換が必要になった場合に備えて用意
+  if (!mode || mode === 'passthrough' || mode === 'off') {
+    return (chunk) => chunk;
+  }
+  // 入力に対する変換は現在は未実装
+  // 必要に応じて追加
   return (chunk) => chunk;
 }
 
@@ -374,7 +416,7 @@ function intercept() {
   setTimeout(() => {
     const rssMb = (process.memoryUsage().rss / 1024 / 1024).toFixed(0);
     process.stderr.write(`${dimGreen}[nproxy]${reset} active (pid=${process.pid}, rss=${rssMb}MB)\n`);
-  }, 5000);
+  }, 5000).unref();
 
   let textMode = process.env.NPROXY_TEXT || 'passthrough';
   let processText = createTextProcessor(textMode);
@@ -412,7 +454,7 @@ function intercept() {
   const bannerTimer = setTimeout(() => {
     const banner = injectBanner();
     if (banner) process.stderr.write(banner);
-  }, 100);
+  }, 100).unref();
 
   // Chunk size limit per write (0 = no limit)
   let maxChunkBytes = 0;
@@ -434,11 +476,50 @@ function intercept() {
     return parts;
   }
 
-  // Wrap stdout.write: for passthrough mode, pass through directly to preserve Ink frame boundaries.
-  // For strip-ansi/transform, apply text processing inline and write immediately in the same tick.
+  // Wrap stdout.write with asynchronous buffering for non-passthrough modes
+  // Passthrough mode: synchronous to preserve Ink frame boundaries
+  // Strip-ansi/transform mode: asynchronous buffering with sequence ordering
   const origStdoutWrite = process.stdout.write.bind(process.stdout);
   process.stdout._origWrite = origStdoutWrite;
+
+  // Asynchronous buffer for non-passthrough modes
+  const stdoutBuffer = [];
+  let stdoutSeq = 0;
+  let isWritingStdout = false;
+
+  // Jitter buffer: dynamic flush interval based on memory state
+  let jitterBufferMs = 0;  // 0 = immediate flush (no jitter)
+  let jitterTimer = null;
+
+  function scheduleStdoutFlush() {
+    if (isWritingStdout) return;
+    isWritingStdout = true;
+
+    // Jitter buffer: delay flush under memory pressure
+    const flushFn = () => {
+      while (stdoutBuffer.length > 0) {
+        const item = stdoutBuffer.shift();
+        origStdoutWrite(item.data, item.encoding, item.callback);
+      }
+      isWritingStdout = false;
+    };
+
+    if (jitterBufferMs > 0) {
+      // Delay flush to absorb timing jitter
+      jitterTimer = setTimeout(flushFn, jitterBufferMs);
+      jitterTimer.unref();
+    } else {
+      // Immediate flush
+      setImmediate(flushFn);
+    }
+  }
+
   process.stdout.write = function (chunk, encoding, callback) {
+    if (traceEnabled) {
+      const s = typeof chunk === 'string' ? chunk : chunk.toString();
+      const escaped = s.replace(/\r/g, '\\r').replace(/\n/g, '\\n');
+      traceLog(`[nproxy-trace] STDOUT: ${JSON.stringify(escaped)}`);
+    }
     if (!bannerShown && typeof chunk === 'string' && chunk.replace(/\x1b\[[\d;]*m/g, '').includes(BANNER_ANCHOR)) {
       clearTimeout(bannerTimer);
       const banner = injectBanner();
@@ -475,26 +556,60 @@ function intercept() {
         }
         return true;
       }
-      // Transform/strip-ansi: apply text processing, write immediately (same tick) to
-      // preserve Ink frame boundaries. No coalescing.
+      // Transform/strip-ansi: asynchronous buffering with sequence ordering
       const processed = processText(chunk);
-      const wrote = origStdoutWrite(processed, encoding, callback);
-      return wrote;
+      stdoutBuffer.push({
+        seq: stdoutSeq++,
+        data: processed,
+        encoding,
+        callback,
+      });
+      scheduleStdoutFlush();
+      return true;
     }
     return origStdoutWrite(chunk, encoding, callback);
   };
 
-  // Wrap stderr.write with chunk splitting
+  // Wrap stderr.write with asynchronous buffering
   const origStderrWrite = process.stderr.write.bind(process.stderr);
   process.stderr._origWrite = origStderrWrite;
+
+  // Asynchronous buffer for stderr
+  const stderrBuffer = [];
+  let stderrSeq = 0;
+  let isWritingStderr = false;
+
+  function scheduleStderrFlush() {
+    if (isWritingStderr) return;
+    isWritingStderr = true;
+    setImmediate(() => {
+      while (stderrBuffer.length > 0) {
+        const item = stderrBuffer.shift();
+        origStderrWrite(item.data, item.encoding, item.callback);
+      }
+      isWritingStderr = false;
+    });
+  }
+
   process.stderr.write = function (chunk, encoding, callback) {
+    if (traceEnabled) {
+      const s = typeof chunk === 'string' ? chunk : chunk.toString();
+      const escaped = s.replace(/\r/g, '\\r').replace(/\n/g, '\\n');
+      traceLog(`[nproxy-trace] STDERR: ${JSON.stringify(escaped)}`);
+    }
     if (typeof chunk === 'string' || chunk instanceof Buffer) {
       const processed = processText(chunk);
       const parts = splitChunk(processed);
       for (let i = 0; i < parts.length; i++) {
         const cb = i === parts.length - 1 ? callback : undefined;
-        origStderrWrite(parts[i], encoding, cb);
+        stderrBuffer.push({
+          seq: stderrSeq++,
+          data: parts[i],
+          encoding,
+          callback: cb,
+        });
       }
+      scheduleStderrFlush();
       return true;
     }
     return origStderrWrite(chunk, encoding, callback);
@@ -514,6 +629,17 @@ function intercept() {
   const monitor = new MemoryMonitor({
     monitorTier: DEFAULT_MONITOR,
     onTransition: (state, heapMb) => {
+      // Jitter buffer: adjust based on memory state
+      if (state === 'emergency' || state === 'critical') {
+        jitterBufferMs = 0;  // Immediate flush (no delay)
+      } else if (state === 'pressure') {
+        jitterBufferMs = 10;  // 10ms jitter buffer
+      } else if (state === 'attention') {
+        jitterBufferMs = 5;   // 5ms jitter buffer
+      } else {
+        jitterBufferMs = 0;  // No jitter
+      }
+
       if (state === 'emergency') {
         // Emergency: force GC (if --expose-gc), stop I/O, last-resort exit
         maxChunkBytes = MAX_CHUNK_CRITICAL;
@@ -669,6 +795,7 @@ Preload mode env vars:
   const { spawn } = require('child_process');
   const textMode = cli.text || process.env.NPROXY_TEXT || 'passthrough';
   const processText = createTextProcessor(textMode);
+  const processInput = createInputProcessor(textMode);
 
   const usePty = cli.pty || process.env.NPROXY_PTY === '1';
 
@@ -737,71 +864,101 @@ Preload mode env vars:
     })();
     if (isScript) {
       child = spawn(process.execPath, ['-r', __filename, cli.app, ...cli.appArgs], {
-        stdio: ['inherit', 'pipe', 'pipe'],
+        stdio: ['pipe', 'pipe', 'pipe'],
         env: { ...process.env, NPROXY_AUTO: '1', NPROXY_TEXT: textMode },
       });
     } else {
       child = spawn(cli.app, cli.appArgs, {
-        stdio: ['inherit', 'pipe', 'pipe'],
+        stdio: ['pipe', 'pipe', 'pipe'],
         env: process.env,
       });
     }
 
-    // Stdout relay with backpressure handling
+    // Stdin relay: forward parent stdin -> child stdin
+    // This ensures nproxy intercepts all IO (not just stdout/stderr)
+    process.stdin.on('data', (chunk) => {
+      const processed = processInput(chunk);
+      if (processed.length > 0) {
+        child.stdin.write(processed);
+      }
+    });
+    process.stdin.on('end', () => {
+      child.stdin.end();
+    });
+
+    // Stdout relay with select-style readable monitoring
     // Memory monitor state: monitoring | attention | pressure | critical | emergency
     let childMonState = 'monitoring';
 
-    child.stdout.pause();
-    child.stdout.on('data', (chunk) => {
-      const processed = processText(chunk);
-      if (processed.length === 0) return;
-      // Under memory pressure: pause child stdout to apply backpressure
-      if (childMonState === 'emergency' || childMonState === 'critical') {
-        child.stdout.pause();
-        const doResume = () => { child.stdout.resume(); };
-        const ok = process.stdout.write(processed, doResume);
-        if (ok) setImmediate(doResume);
-        return;
-      }
-      if (childMonState === 'pressure') {
-        child.stdout.pause();
-        const ok = process.stdout.write(processed, () => { child.stdout.resume(); });
-        if (ok) setImmediate(() => { child.stdout.resume(); });
-        return;
-      }
-      const ok = process.stdout.write(processed);
-      if (!ok) {
-        child.stdout.pause();
-        process.stdout.once('drain', () => { child.stdout.resume(); });
+    // Select-style readable monitoring for stdout
+    child.stdout.on('readable', () => {
+      let chunk;
+      while ((chunk = child.stdout.read()) !== null) {
+        const processed = processText(chunk);
+        if (processed.length === 0) continue;
+        // Under memory pressure: apply backpressure
+        if (childMonState === 'emergency' || childMonState === 'critical') {
+          const ok = process.stdout.write(processed);
+          if (!ok) {
+            // Wait for drain before continuing
+            process.stdout.once('drain', () => {
+              // Resume reading after drain
+            });
+            break;
+          }
+          continue;
+        }
+        if (childMonState === 'pressure') {
+          const ok = process.stdout.write(processed);
+          if (!ok) {
+            process.stdout.once('drain', () => {});
+            break;
+          }
+          continue;
+        }
+        const ok = process.stdout.write(processed);
+        if (!ok) {
+          // Backpressure: stop reading until drain
+          process.stdout.once('drain', () => {
+            // Resume reading after drain
+            child.stdout.read(0);  // Trigger readable event
+          });
+          break;
+        }
       }
     });
-    child.stdout.resume();
 
-    // Stderr relay with backpressure handling
-    child.stderr.pause();
-    child.stderr.on('data', (chunk) => {
-      const processed = processText(chunk);
-      if (processed.length === 0) return;
-      if (childMonState === 'emergency' || childMonState === 'critical') {
-        child.stderr.pause();
-        const doResume = () => { child.stderr.resume(); };
-        const ok = process.stderr.write(processed, doResume);
-        if (ok) setImmediate(doResume);
-        return;
-      }
-      if (childMonState === 'pressure') {
-        child.stderr.pause();
-        const ok = process.stderr.write(processed, () => { child.stderr.resume(); });
-        if (ok) setImmediate(() => { child.stderr.resume(); });
-        return;
-      }
-      const ok = process.stderr.write(processed);
-      if (!ok) {
-        child.stderr.pause();
-        process.stderr.once('drain', () => { child.stderr.resume(); });
+    // Select-style readable monitoring for stderr
+    child.stderr.on('readable', () => {
+      let chunk;
+      while ((chunk = child.stderr.read()) !== null) {
+        const processed = processText(chunk);
+        if (processed.length === 0) continue;
+        if (childMonState === 'emergency' || childMonState === 'critical') {
+          const ok = process.stderr.write(processed);
+          if (!ok) {
+            process.stderr.once('drain', () => {});
+            break;
+          }
+          continue;
+        }
+        if (childMonState === 'pressure') {
+          const ok = process.stderr.write(processed);
+          if (!ok) {
+            process.stderr.once('drain', () => {});
+            break;
+          }
+          continue;
+        }
+        const ok = process.stderr.write(processed);
+        if (!ok) {
+          process.stderr.once('drain', () => {
+            child.stderr.read(0);
+          });
+          break;
+        }
       }
     });
-    child.stderr.resume();
 
     // Memory monitor: track child RSS via /proc/{pid}/status
     const childMon = new MemoryMonitor({
