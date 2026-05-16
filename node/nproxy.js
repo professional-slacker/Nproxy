@@ -68,9 +68,15 @@ function parseArgs(argv) {
     if (a === '--pty') { out.pty = true; continue; }
     if (a === '--no-pty') { out.pty = false; continue; }
     if (a === '--help' || a === '-h') { out.help = true; continue; }
+    if (a === '--') { i++; break; }
     out.app = a;
     out.appArgs = argv.slice(i + 1);
     break;
+  }
+  // After --, set app from remaining args
+  if (!out.app && i < argv.length) {
+    out.app = argv[i];
+    out.appArgs = argv.slice(i + 1);
   }
   return out;
 }
