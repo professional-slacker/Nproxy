@@ -715,21 +715,22 @@ function intercept() {
   // SIGINT pre-cleanup: free memory before host app's SIGINT handler runs
   // This prevents OOM during cleanup (especially spinner teardown)
   let _sigintCleanupDone = false;
-  process.on('SIGINT', () => {
+  function _sigintPreCleanup() {
     if (_sigintCleanupDone) return; // 2nd+ pass-through
     _sigintCleanupDone = true;
 
     // Release memory headroom for host app's cleanup
     if (typeof global.gc === 'function') global.gc();
-    stderrBuffer.length = 0;
+    stderrBuffer.splice(0, stderrBuffer.length);
 
     // Remove self, then re-fire so host app's handler runs
-    process.removeListener('SIGINT', arguments.callee);
+    process.removeListener('SIGINT', _sigintPreCleanup);
     process.kill(process.pid, 'SIGINT');
-  });
+  }
+  process.on('SIGINT', _sigintPreCleanup);
 
   // Warn if --expose-gc is not set (emergency GC in nheap_limit will be no-op)
-  if (typeof global.gc !== 'function') {
+  if (typeof global.gc !== 'function' && process.env.NPROXY_VERBOSE) {
     process.stderr.write(`${YELLOW}[nproxy]${RESET} --expose-gc not set. Emergency GC will be no-op. Add --expose-gc to node flags.\n`);
   }
 
