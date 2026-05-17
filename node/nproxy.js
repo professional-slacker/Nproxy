@@ -712,6 +712,27 @@ function intercept() {
     }
   } catch (_) { /* addon not built — tick-only monitoring */ }
 
+  // SIGINT pre-cleanup: free memory before host app's SIGINT handler runs
+  // This prevents OOM during cleanup (especially spinner teardown)
+  let _sigintCleanupDone = false;
+  process.on('SIGINT', () => {
+    if (_sigintCleanupDone) return; // 2nd+ pass-through
+    _sigintCleanupDone = true;
+
+    // Release memory headroom for host app's cleanup
+    if (typeof global.gc === 'function') global.gc();
+    stderrBuffer.length = 0;
+
+    // Remove self, then re-fire so host app's handler runs
+    process.removeListener('SIGINT', arguments.callee);
+    process.kill(process.pid, 'SIGINT');
+  });
+
+  // Warn if --expose-gc is not set (emergency GC in nheap_limit will be no-op)
+  if (typeof global.gc !== 'function') {
+    process.stderr.write(`${YELLOW}[nproxy]${RESET} --expose-gc not set. Emergency GC will be no-op. Add --expose-gc to node flags.\n`);
+  }
+
   // Periodic memory log (NPROXY_MEMLOG=60 for every 60s)
   if (memLogInterval > 0) {
     function logMem() {
