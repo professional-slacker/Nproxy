@@ -778,10 +778,17 @@ function intercept() {
       logCrash('unhandledRejection', reason);
     });
     process.on('exit', (code) => {
-      if (code !== 0 && code !== null) {
-        const rss = (process.memoryUsage().rss / 1024 / 1024).toFixed(1);
-        process.stderr.write(`\x1b[31m[nproxy] process exit with code ${code} (final RSS: ${rss}MB)\x1b[0m\n`);
-      }
+      const rss = (process.memoryUsage().rss / 1024 / 1024).toFixed(1);
+      process.stderr.write(`\x1b[31m[nproxy] process exit with code ${code} (final RSS: ${rss}MB)\x1b[0m\n`);
+    });
+    process.on('SIGPIPE', () => {
+      process.stderr.write(`\x1b[33m[nproxy] SIGPIPE received — pipe closed\x1b[0m\n`);
+    });
+    process.on('SIGHUP', () => {
+      process.stderr.write(`\x1b[33m[nproxy] SIGHUP received — terminal disconnected\x1b[0m\n`);
+    });
+    process.on('beforeExit', (code) => {
+      process.stderr.write(`\x1b[33m[nproxy] beforeExit(${code}) — event loop drained\x1b[0m\n`);
     });
 
     // Check heap limit and warn on first attention tick; don't guess a timer delay
