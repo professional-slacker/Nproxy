@@ -143,8 +143,11 @@ function createTextProcessor(mode) {
 function createInputProcessor(mode) {
   // 入力変換は基本的にpassthrough
   // 将来的に入力変換が必要になった場合に備えて用意
-  // 入力変換はpassthrough固定。
-  // 将来的に入力変換が必要になった場合に備えて用意。
+  if (!mode || mode === 'passthrough' || mode === 'off') {
+    return (chunk) => chunk;
+  }
+  // 入力に対する変換は現在は未実装
+  // 必要に応じて追加
   return (chunk) => chunk;
 }
 
@@ -311,16 +314,11 @@ class MemoryMonitor {
     }
 
     if (newState !== this.state) {
-      this._forceTransition(newState, heapMb);
+      this.state = newState;
+      this._onTransition(newState, heapMb);
     }
 
     this._timer = setTimeout(() => this._tick(), this.tickMs).unref();
-  }
-
-  // Force a state transition (used by installMonitorTier for emergency escalation)
-  _forceTransition(newState, heapMb) {
-    this.state = newState;
-    this._onTransition(newState, heapMb);
   }
 }
 
@@ -353,11 +351,12 @@ function installMonitorTier(mon) {
         process.stderr.write(warnMsg);
         // Force state change so chunk size shrinks and backpressure engages
         if (ratio > 0.95 && mon.state !== 'emergency') {
-          const rssMb = process.memoryUsage().rss / 1024 / 1024;
           if (mon.state === 'critical') {
-            mon._forceTransition('emergency', rssMb);
-          } else {
-            mon._forceTransition('critical', rssMb);
+            mon.state = 'emergency';
+            mon._onTransition('emergency', process.memoryUsage().rss / 1024 / 1024);
+          } else if (mon.state !== 'critical') {
+            mon.state = 'critical';
+            mon._onTransition('critical', process.memoryUsage().rss / 1024 / 1024);
           }
         }
       }
@@ -379,7 +378,8 @@ function installMonitorTier(mon) {
         process.stderr.write(warnMsg);
         if (mon._spikeCount >= 1) {
           const currentHeap = process.memoryUsage().rss / 1024 / 1024;
-          mon._forceTransition('emergency', currentHeap);
+          mon.state = 'emergency';
+          mon._onTransition('emergency', currentHeap);
           mon._spikeCount = 0;
         }
       }
@@ -768,7 +768,8 @@ function intercept() {
         stack ? `  Stack:\n${stack}` : ''
       ].filter(Boolean).join('\n');
 
-      process.stderr.write(report + '\n');
+      // Use origStderrWrite directly — ensure crash report is visible even on exit
+      try { origStderrWrite(report + '\n'); } catch (_) {}
     };
 
     process.on('uncaughtException', (err) => {
@@ -778,10 +779,33 @@ function intercept() {
       logCrash('unhandledRejection', reason);
     });
     process.on('exit', (code) => {
-      if (code !== 0 && code !== null) {
+      // Flush stderr buffer synchronously — setImmediate won't fire in exit handler
+      try {
+        while (stderrBuffer.length > 0) {
+          const item = stderrBuffer.shift();
+          origStderrWrite(item.data, item.encoding);
+        }
+      } catch (_) {}
+      try {
         const rss = (process.memoryUsage().rss / 1024 / 1024).toFixed(1);
-        process.stderr.write(`\x1b[31m[nproxy] process exit with code ${code} (final RSS: ${rss}MB)\x1b[0m\n`);
-      }
+        origStderrWrite(`\x1b[31m[nproxy] process exit with code ${code} (final RSS: ${rss}MB)\x1b[0m\n`);
+      } catch (_) { /* stream may be closed */ }
+    });
+    process.on('SIGPIPE', () => {
+      try { origStderrWrite(`\x1b[33m[nproxy] SIGPIPE received — pipe closed\x1b[0m\n`); } catch (_) {}
+    });
+    process.on('SIGHUP', () => {
+      try { origStderrWrite(`\x1b[33m[nproxy] SIGHUP received — terminal disconnected\x1b[0m\n`); } catch (_) {}
+    });
+    process.on('beforeExit', (code) => {
+      // Flush stderr buffer synchronously before event loop drains
+      try {
+        while (stderrBuffer.length > 0) {
+          const item = stderrBuffer.shift();
+          origStderrWrite(item.data, item.encoding);
+        }
+      } catch (_) {}
+      try { origStderrWrite(`\x1b[33m[nproxy] beforeExit(${code}) — event loop drained\x1b[0m\n`); } catch (_) {}
     });
 
     // Check heap limit and warn on first attention tick; don't guess a timer delay
@@ -826,29 +850,21 @@ Preload mode env vars:
   const processText = createTextProcessor(textMode);
   const processInput = createInputProcessor(textMode);
 
-  // PTY mode: try PTY by default, fall back to pipe if node-pty is not available.
-  // --pty forces PTY (fail if not available), --no-pty forces pipe.
-  const explicitPty = cli.pty || process.env.NPROXY_PTY === '1';
-  const explicitNoPty = process.argv.includes('--no-pty') || process.env.NPROXY_PTY === '0';
-
-  let usePty = !explicitNoPty; // default: try PTY
-  let pty;
-  if (usePty) {
-    try { pty = require('node-pty'); } catch (e) {
-      if (explicitPty) {
-        process.stderr.write('[nproxy] --pty mode requires node-pty.\n');
-        process.stderr.write('[nproxy] Install: npm install -g node-pty\n');
-        process.stderr.write('[nproxy] Windows: use WSL2 or the Rust binary (Nproxy.rs) instead.\n');
-        process.exit(1);
-      }
-      usePty = false; // fall back to pipe
-      process.stderr.write('[nproxy] node-pty not available, using pipe mode\n');
-    }
-  }
+  const usePty = cli.pty || process.env.NPROXY_PTY === '1';
 
   let child;
   if (usePty) {
     // ---- PTY mode: use node-pty for TTY emulation ----
+    // NOTE: --pty requires the "node-pty" package (native addon, requires build tools).
+    // Install: npm install -g node-pty
+    // Windows: prefer WSL2 or use the Rust binary (Nproxy.rs) instead.
+    let pty;
+    try { pty = require('node-pty'); } catch (e) {
+      process.stderr.write('[nproxy] --pty mode requires node-pty.\n');
+      process.stderr.write('[nproxy] Install: npm install -g node-pty\n');
+      process.stderr.write('[nproxy] Windows: use WSL2 or the Rust binary (Nproxy.rs) instead.\n');
+      process.exit(1);
+    }
     const env = { ...process.env, TERM: process.env.TERM || 'xterm-256color' };
     child = pty.spawn(cli.app, cli.appArgs, {
       name: env.TERM,
@@ -866,10 +882,16 @@ Preload mode env vars:
         if (signal === 'SIGKILL') process.exit(128 + 9);
         else process.kill(process.pid, signal);
       }
-      else process.exit(Number(exitCode) || 0);
+      else process.exit(exitCode);
     });
-    // PTY stdin relay: forward parent stdin -> child (node-pty handles encoding)
-    process.stdin.on('data', (data) => { child.write(data); });
+    // PTY stdin relay: forward parent stdin -> child
+    if (!process.stdin.isTTY) {
+      // Pipe mode: relay raw bytes
+      process.stdin.on('data', (data) => { child.write(data); });
+    } else {
+      // TTY mode: relay raw bytes (node-pty handles encoding)
+      process.stdin.on('data', (data) => { child.write(data); });
+    }
     // PTY resize
     process.on('SIGWINCH', () => {
       if (process.stdout.columns && process.stdout.rows) {
@@ -894,8 +916,7 @@ Preload mode env vars:
       finally { if (fd !== undefined) { const fs = require('fs'); fs.closeSync(fd); } }
     })();
     if (isScript) {
-      // --expose-gc: enable global.gc() for emergency memory recovery
-      child = spawn(process.execPath, ['--expose-gc', '-r', __filename, cli.app, ...cli.appArgs], {
+      child = spawn(process.execPath, ['-r', __filename, cli.app, ...cli.appArgs], {
         stdio: ['pipe', 'pipe', 'pipe'],
         env: { ...process.env, NPROXY_AUTO: '1', NPROXY_TEXT: textMode },
       });
@@ -918,10 +939,7 @@ Preload mode env vars:
       } catch (e) {
         // /proc may not be available or permission denied
         // Continue without OOM score adjustment
-        // Silently ignore EACCES (no root) — only warn on unexpected errors
-        if (!e.message.includes('EACCES')) {
-          process.stderr.write(`[nproxy] warning: could not adjust OOM score: ${e.message}\n`);
-        }
+        process.stderr.write(`[nproxy] warning: could not adjust OOM score: ${e.message}\n`);
       }
     }
 
@@ -951,8 +969,9 @@ Preload mode env vars:
         if (childMonState === 'emergency' || childMonState === 'critical') {
           const ok = process.stdout.write(processed);
           if (!ok) {
+            // Wait for drain before continuing
             process.stdout.once('drain', () => {
-              child.stdout.read(0);
+              // Resume reading after drain
             });
             break;
           }
@@ -961,9 +980,7 @@ Preload mode env vars:
         if (childMonState === 'pressure') {
           const ok = process.stdout.write(processed);
           if (!ok) {
-            process.stdout.once('drain', () => {
-              child.stdout.read(0);
-            });
+            process.stdout.once('drain', () => {});
             break;
           }
           continue;
@@ -989,9 +1006,7 @@ Preload mode env vars:
         if (childMonState === 'emergency' || childMonState === 'critical') {
           const ok = process.stderr.write(processed);
           if (!ok) {
-            process.stderr.once('drain', () => {
-              child.stderr.read(0);
-            });
+            process.stderr.once('drain', () => {});
             break;
           }
           continue;
@@ -999,9 +1014,7 @@ Preload mode env vars:
         if (childMonState === 'pressure') {
           const ok = process.stderr.write(processed);
           if (!ok) {
-            process.stderr.once('drain', () => {
-              child.stderr.read(0);
-            });
+            process.stderr.once('drain', () => {});
             break;
           }
           continue;
