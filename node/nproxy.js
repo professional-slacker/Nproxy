@@ -605,6 +605,10 @@ function intercept() {
       traceLog(`[nproxy-trace] STDERR: ${JSON.stringify(escaped)}`);
     }
     if (typeof chunk === 'string' || chunk instanceof Buffer) {
+      // Passthrough mode: write directly to preserve frame boundaries
+      if (textMode === 'passthrough') {
+        return origStderrWrite(chunk, encoding, callback);
+      }
       const processed = processText(chunk);
       const parts = splitChunk(processed);
       for (let i = 0; i < parts.length; i++) {
