@@ -1390,11 +1390,15 @@ Preload mode env vars:
 } // end runCLI
 
 // ---- Entry ----
-if (require.main === module) {
+// Detect preload mode: when loaded via NODE_OPTIONS="-r nproxy.js",
+// require.main === module is true but process.argv[1] is the target app
+// (e.g. openclaude), not nproxy.js. In that case, skip CLI mode.
+const isPreload = require.main === module && process.argv[1] !== __filename;
+if (require.main === module && !isPreload) {
   runCLI();
 }
 // When loaded via -r (preload), auto-intercept.
-// NPROXY_AUTO=1 is set by CLI mode spawn.
+// NPROXY_AUTO=1 is set by CLI mode spawn to prevent recursive intercept.
 intercept();
 
 module.exports = { intercept, MemoryMonitor, createTextProcessor, installMonitorTier };
