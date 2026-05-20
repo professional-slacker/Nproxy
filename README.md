@@ -14,28 +14,36 @@ nproxy command [args...]                 # Rust CLI mode
 ## Quick Start
 
 ```bash
-# 1. Hook into an existing Node.js app (preload -r mode)
+# 1. Hook into an existing Node.js app (NODE_OPTIONS — recommended)
 #    nproxy shares the app's process, monitoring memory in real-time.
+NODE_OPTIONS="--expose-gc -r $HOME/workfolder/Nproxy/node/nproxy.js" \
+  NPROXY_TEXT=passthrough my-app.js
+
+# 2. Hook with node -r (also works for CJS apps)
 NPROXY_TEXT=passthrough node -r ./node/nproxy.js my-app.js
 
-# 2. Launch any CLI tool through nproxy (spawn mode)
+# 3. Launch any CLI tool through nproxy (spawn mode)
 #    nproxy runs the tool as a child process and relays I/O.
 ./nproxy-run.sh my-agent
 
-# 3. Aliases for daily use (add to ~/.bash_aliases)
-alias npro='NPROXY_TEXT=passthrough node -r $HOME/workfolder/Nproxy/node/nproxy.js'
-alias myagent='npro /usr/bin/myagent'
+# 4. Aliases for daily use (add to ~/.bash_aliases)
+alias npro='NODE_OPTIONS="--expose-gc -r $HOME/workfolder/Nproxy/node/nproxy.js" NPROXY_TEXT=passthrough'
+alias myagent='npro my-app'
 
 # Then simply:
 myagent
 ```
 
-**Preload mode (-r) vs spawn mode (no -r):**
+**Preload mode vs spawn mode:**
 
 | Mode | What it does | Use when |
 |------|---|---|
-| `node -r ./nproxy.js app` | nproxy runs **inside** the app process | You want to wrap an existing Node.js CLI or TUI app |
+| `NODE_OPTIONS="-r nproxy.js" app` | nproxy runs **inside** the app process (recommended for ESM apps) | You want to wrap an existing Node.js CLI or TUI app |
+| `node -r ./nproxy.js app` | nproxy runs **inside** the app process (CJS only) | Simple CJS apps |
 | `./nproxy-run.sh app` | nproxy runs the app as a **child process** | You want to launch any command (Node, Go, Python, etc.) through nproxy |
+
+> **Note:** For ESM main scripts (e.g., apps with `"type": "module"`), use `NODE_OPTIONS` instead of `node -r`.
+> Node.js may skip CJS preload with `node -r` when the main script is ESM.
 
 **Windows support:**
 
