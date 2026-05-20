@@ -1048,7 +1048,11 @@ Preload mode env vars:
 } // end runCLI
 
 // ---- Entry ----
-if (require.main === module) {
+// Detect preload mode: if process.argv[1] is NOT this file, we're being
+// preloaded via NODE_OPTIONS="-r nproxy.js" alongside another app (e.g. openclaude).
+// In that case, skip CLI mode and only run intercept().
+const isPreload = require.main === module && process.argv[1] !== __filename;
+if (require.main === module && !isPreload) {
   runCLI();
 }
 // When loaded via -r (preload), auto-intercept.
