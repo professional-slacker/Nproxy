@@ -13,7 +13,7 @@ NPROXY_TEXT=strip-ansi node -r ./node/nproxy.js /usr/bin/openclaude
 | 変数 | テスト値 | 備考 |
 |------|----------|------|
 | NPROXY_TEXT | passthrough / transform / strip-ansi | デフォルト passthrough |
-| NPROXY_MONITOR | 1 (default) | チャンク分割 + メモリ監視有効 |
+| NPROXY_MONITOR | auto (default) | auto/rss/split/array |
 | NPROXY_DEBUG | 1 | デバッグログ出力 |
 
 ## テスト項目

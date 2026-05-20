@@ -173,7 +173,7 @@ node nproxy.js [--text=MODE] [--text-log=PATH] app.js [args...]
 | `--text=off` | text 処理しない（既定） |
 | `--text=passthrough` | StringDecoder 経由で string 化、そのまま出力 |
 | `--text=transform` | StringDecoder + 行頭ts/行番号付与 |
-| `--text=tee` | StringDecoder + 標準出力 + ログファイル両方 |
+| `--text=tee` | **未実装** — 将来の拡張用 |
 | `--text-log=PATH` | tee モードのログ出力先 (既定: `./nproxy.text.log`) |
 
 環境変数でも同等指定可能 (`NPROXY_TEXT`, `NPROXY_TEXT_LOG`)。
