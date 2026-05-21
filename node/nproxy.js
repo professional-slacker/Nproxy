@@ -419,10 +419,10 @@ function intercept() {
   if (process.env.NPROXY_AUTO === '1') return;
 
   // Set process title for ps/OOM identification
-  // Format: "<app> -via by nproxy <state>"
+  // Format: "<app> [nproxy::<state>]"
   const appName = process.argv[1] ? require('path').basename(process.argv[1]) : 'unknown';
-  const nproxyTitleBase = `${appName} -via by nproxy`;
-  let nproxyTitle = `${nproxyTitleBase} normal`;
+  const nproxyTitleBase = `${appName} [nproxy`;
+  let nproxyTitle = `${nproxyTitleBase}::monitoring]`;
   process.title = nproxyTitle;
 
   // Delayed stderr "active" indicator (safe for TUI apps)
@@ -665,7 +665,7 @@ function intercept() {
         // Emergency: force GC (if --expose-gc), stop I/O, last-resort exit
         maxChunkBytes = MAX_CHUNK_CRITICAL;
         bypassCoalesce = true;
-        nproxyTitle = `${nproxyTitleBase} emg:${heapMb}MB`;
+        nproxyTitle = `${nproxyTitleBase}::emergency]`;
         process.title = nproxyTitle;
         process.stderr.write(`\x1b[31;1m[nproxy] EMERGENCY: ${heapMb}MB — forcing recovery\x1b[0m\n`);
         if (typeof global.gc === 'function') {
@@ -686,12 +686,12 @@ function intercept() {
       } else if (state === 'critical') {
         maxChunkBytes = MAX_CHUNK_CRITICAL;
         bypassCoalesce = true;
-        nproxyTitle = `${nproxyTitleBase} critical:${heapMb}MB`;
+        nproxyTitle = `${nproxyTitleBase}::critical:${heapMb}MB]`;
         process.title = nproxyTitle;
         process.stderr.write(`${BLUE}${BOLD}[nproxy]${RESET}${BLUE} memory critical: ${heapMb}MB — throttling I/O${RESET}\n`);
       } else if (state === 'pressure') {
         maxChunkBytes = MAX_CHUNK_PRESSURE;
-        nproxyTitle = `${nproxyTitleBase} pressure:${heapMb}MB`;
+        nproxyTitle = `${nproxyTitleBase}::pressure:${heapMb}MB]`;
         process.title = nproxyTitle;
         if (textMode === 'passthrough') {
           textMode = 'strip-ansi';
@@ -703,13 +703,13 @@ function intercept() {
       } else if (state === 'attention') {
         // Attention: mild throttling, start chunk splitting
         maxChunkBytes = MAX_CHUNK_ATTENTION;
-        nproxyTitle = `${nproxyTitleBase} attention:${heapMb}MB`;
+        nproxyTitle = `${nproxyTitleBase}::attention:${heapMb}MB]`;
         process.title = nproxyTitle;
         process.stderr.write(`${DIM_GREEN}[nproxy]${RESET} memory attention: ${heapMb}MB — monitoring\n`);
       } else {
         maxChunkBytes = MAX_CHUNK_NORMAL;
         bypassCoalesce = false;
-        nproxyTitle = `${nproxyTitleBase} normal`;
+        nproxyTitle = `${nproxyTitleBase}::monitoring]`;
         process.title = nproxyTitle;
         if (textMode !== process.env.NPROXY_TEXT && textMode !== 'passthrough') {
           textMode = process.env.NPROXY_TEXT || 'passthrough';
