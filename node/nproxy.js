@@ -419,14 +419,16 @@ function intercept() {
   if (process.env.NPROXY_AUTO === '1') return;
 
   // Set process title to "nproxy:<app>" for ps/OOM identification
-  if (process.argv[1]) {
-    const appName = require('path').basename(process.argv[1]);
-    process.title = `nproxy:${appName}`;
-  }
+  const appName = process.argv[1] ? require('path').basename(process.argv[1]) : 'unknown';
+  const nproxyTitle = `nproxy:${appName}`;
+  process.title = nproxyTitle;
 
   // Delayed stderr "active" indicator (safe for TUI apps)
+  // Also re-set process.title here because the host app (e.g. openclaude)
+  // may overwrite it during its own initialization.
   const dimGreen = '\x1b[32;2m', reset = '\x1b[0m';
   setTimeout(() => {
+    process.title = nproxyTitle;
     const rssMb = (process.memoryUsage().rss / 1024 / 1024).toFixed(0);
     process.stderr.write(`${dimGreen}[nproxy]${reset} active (pid=${process.pid}, rss=${rssMb}MB)\n`);
   }, 5000).unref();
