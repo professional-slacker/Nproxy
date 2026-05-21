@@ -418,6 +418,12 @@ function intercept() {
   // Skip if already running under nproxy (e.g. Node wrapper → spawnSync → Go binary)
   if (process.env.NPROXY_AUTO === '1') return;
 
+  // Set process title to "nproxy:<app>" for ps/OOM identification
+  if (process.argv[1]) {
+    const appName = require('path').basename(process.argv[1]);
+    process.title = `nproxy:${appName}`;
+  }
+
   // Delayed stderr "active" indicator (safe for TUI apps)
   const dimGreen = '\x1b[32;2m', reset = '\x1b[0m';
   setTimeout(() => {
