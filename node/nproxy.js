@@ -812,7 +812,10 @@ function intercept() {
       } catch (_) {}
       try {
         const rss = (process.memoryUsage().rss / 1024 / 1024).toFixed(1);
-        origStderrWrite(`\x1b[31m[nproxy] process exit with code ${code} (final RSS: ${rss}MB)\x1b[0m\n`);
+        const state = monitor ? monitor.state : 'unknown';
+        const heapUsed = (process.memoryUsage().heapUsed / 1024 / 1024).toFixed(1);
+        const heapTotal = (process.memoryUsage().heapTotal / 1024 / 1024).toFixed(1);
+        origStderrWrite(`\x1b[31m[nproxy] process exit with code ${code} (RSS: ${rss}MB, heap: ${heapUsed}/${heapTotal}MB, state: ${state}, retries: ${emergencyRetries})\x1b[0m\n`);
       } catch (_) { /* stream may be closed */ }
     });
     process.on('SIGPIPE', () => {
