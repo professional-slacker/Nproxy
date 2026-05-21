@@ -144,6 +144,14 @@ NPROXY_MEMLOG=60                               # periodic memory log in seconds 
 - Coalescing to prevent frame rate loss in interactive CLI frameworks (Ink, React, etc.)
 - Color-coded stderr feedback: attention (yellow) / pressure (red) / critical (blue) / emergency (magenta)
 - Startup banner `◈ nproxy memory guard active` injected on first output
+- **Process title** — `ps` and OOM messages show the app name and memory state:
+  ```
+  my-app [nproxy::monitoring]            # normal
+  my-app [nproxy::attention:300MB]       # attention
+  my-app [nproxy::pressure:500MB]        # pressure
+  my-app [nproxy::critical:1024MB]       # critical
+  my-app [nproxy::emergency]             # emergency
+  ```
 - Cursor show/hide (`?25h`/`?25l`) preserved in transform/strip-ansi mode
 - Windows: undefined signals guarded with try/catch
 
