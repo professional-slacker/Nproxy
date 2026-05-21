@@ -13,7 +13,13 @@
 //   3. Protocol layer is outside nproxy
 // ============================================================
 
-// ---- TRACE logging (internal, non-public) ----
+// ---- Logging system ----
+const LOG_LEVELS = { ERROR: 0, INFO: 1, DEBUG: 2, TRACE: 3 };
+const NPROXY_LOG_LEVEL = (process.env.NPROXY_LOG_LEVEL || '').toUpperCase();
+const currentLogLevel = LOG_LEVELS[NPROXY_LOG_LEVEL] ?? -1; // -1 = silent (only ERROR forced)
+const NPROXY_LOG_FILE = process.env.NPROXY_LOG_FILE || null;
+
+// Legacy trace support (backward compatible)
 let traceLogPath = null;
 let traceEnabled = false;
 
@@ -32,16 +38,54 @@ function initTraceLogger() {
       // ignore
     }
   }
-}
-
-function traceLog(line) {
-  if (!traceEnabled || !traceLogPath) return;
-  try {
-    require('fs').appendFileSync(traceLogPath, line + '\n');
-  } catch (e) {
-    // ignore write errors
+  // Initialize log file if specified
+  if (NPROXY_LOG_FILE) {
+    try {
+      require('fs').appendFileSync(NPROXY_LOG_FILE, '');
+    } catch (e) {
+      // ignore
+    }
   }
 }
+
+// Main log function: log(level, message)
+// - level: 'ERROR', 'INFO', 'DEBUG', 'TRACE'
+// - If NPROXY_LOG_LEVEL is not set, only ERROR logs are output
+// - ERROR always logs regardless of level setting (for fatal/critical errors)
+function log(level, line) {
+  if (!level) return; // No level specified = skip
+  const levelNum = LOG_LEVELS[level] ?? -1;
+  // ERROR always logs (even when level is unset)
+  // Other levels only log when explicitly enabled
+  if (level === 'ERROR' || levelNum <= currentLogLevel) {
+    const timestamp = new Date().toISOString();
+    const formatted = `[${timestamp}] [nproxy] [${level}] ${line}`;
+    if (NPROXY_LOG_FILE) {
+      try {
+        require('fs').appendFileSync(NPROXY_LOG_FILE, formatted + '\n');
+      } catch (e) {
+        // Fallback to stderr
+        process.stderr.write(formatted + '\n');
+      }
+    } else {
+      process.stderr.write(formatted + '\n');
+    }
+  }
+  // Legacy trace support
+  if (traceEnabled && traceLogPath) {
+    try {
+      require('fs').appendFileSync(traceLogPath, line + '\n');
+    } catch (e) {
+      // ignore write errors
+    }
+  }
+}
+
+// Convenience functions
+function logError(line) { log('ERROR', line); }
+function logInfo(line) { log('INFO', line); }
+function logDebug(line) { log('DEBUG', line); }
+function logTrace(line) { log('TRACE', line); }
 
 initTraceLogger();
 const DFS_ATTENTION_MB = 256;
@@ -535,7 +579,7 @@ function intercept() {
     if (traceEnabled) {
       const s = typeof chunk === 'string' ? chunk : chunk.toString();
       const escaped = s.replace(/\r/g, '\\r').replace(/\n/g, '\\n');
-      traceLog(`[nproxy-trace] STDOUT: ${JSON.stringify(escaped)}`);
+      logTrace(`STDOUT: ${JSON.stringify(escaped)}`);
     }
     if (!bannerShown && typeof chunk === 'string' && chunk.replace(/\x1b\[[\d;]*m/g, '').includes(BANNER_ANCHOR)) {
       clearTimeout(bannerTimer);
@@ -612,7 +656,7 @@ function intercept() {
     if (traceEnabled) {
       const s = typeof chunk === 'string' ? chunk : chunk.toString();
       const escaped = s.replace(/\r/g, '\\r').replace(/\n/g, '\\n');
-      traceLog(`[nproxy-trace] STDERR: ${JSON.stringify(escaped)}`);
+      logTrace(`STDERR: ${JSON.stringify(escaped)}`);
     }
     if (typeof chunk === 'string' || chunk instanceof Buffer) {
       // Passthrough mode: write directly to preserve frame boundaries
@@ -667,6 +711,7 @@ function intercept() {
         bypassCoalesce = true;
         nproxyTitle = `${nproxyTitleBase}::emergency]`;
         process.title = nproxyTitle;
+        log('ERROR', `EMERGENCY: ${heapMb}MB — forcing recovery`);
         process.stderr.write(`\x1b[31;1m[nproxy] EMERGENCY: ${heapMb}MB — forcing recovery\x1b[0m\n`);
         if (typeof global.gc === 'function') {
           try { global.gc(); } catch (_) {}
@@ -680,6 +725,7 @@ function intercept() {
         // Does NOT kill the child process (principle ②: signals relayed, not generated)
         emergencyRetries++;
         if (emergencyRetries > 3) {
+          log('ERROR', `EMERGENCY: no recovery after 3 retries — exiting`);
           process.stderr.write(`\x1b[31;1m[nproxy] EMERGENCY: no recovery after 3 retries — exiting\x1b[0m\n`);
           process.exit(1);
         }
@@ -688,6 +734,7 @@ function intercept() {
         bypassCoalesce = true;
         nproxyTitle = `${nproxyTitleBase}::critical:${heapMb}MB]`;
         process.title = nproxyTitle;
+        log('ERROR', `memory critical: ${heapMb}MB — throttling I/O`);
         process.stderr.write(`${BLUE}${BOLD}[nproxy]${RESET}${BLUE} memory critical: ${heapMb}MB — throttling I/O${RESET}\n`);
       } else if (state === 'pressure') {
         maxChunkBytes = MAX_CHUNK_PRESSURE;
