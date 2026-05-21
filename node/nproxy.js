@@ -792,7 +792,8 @@ function intercept() {
         stack ? `  Stack:\n${stack}` : ''
       ].filter(Boolean).join('\n');
 
-      process.stderr.write(report + '\n');
+      // Use origStderrWrite directly — ensure crash report is visible even on exit
+      try { origStderrWrite(report + '\n'); } catch (_) {}
     };
 
     process.on('uncaughtException', (err) => {
@@ -802,17 +803,33 @@ function intercept() {
       logCrash('unhandledRejection', reason);
     });
     process.on('exit', (code) => {
-      const rss = (process.memoryUsage().rss / 1024 / 1024).toFixed(1);
-      process.stderr.write(`\x1b[31m[nproxy] process exit with code ${code} (final RSS: ${rss}MB)\x1b[0m\n`);
+      // Flush stderr buffer synchronously — setImmediate won't fire in exit handler
+      try {
+        while (stderrBuffer.length > 0) {
+          const item = stderrBuffer.shift();
+          origStderrWrite(item.data, item.encoding);
+        }
+      } catch (_) {}
+      try {
+        const rss = (process.memoryUsage().rss / 1024 / 1024).toFixed(1);
+        origStderrWrite(`\x1b[31m[nproxy] process exit with code ${code} (final RSS: ${rss}MB)\x1b[0m\n`);
+      } catch (_) { /* stream may be closed */ }
     });
     process.on('SIGPIPE', () => {
-      process.stderr.write(`\x1b[33m[nproxy] SIGPIPE received — pipe closed\x1b[0m\n`);
+      try { origStderrWrite(`\x1b[33m[nproxy] SIGPIPE received — pipe closed\x1b[0m\n`); } catch (_) {}
     });
     process.on('SIGHUP', () => {
-      process.stderr.write(`\x1b[33m[nproxy] SIGHUP received — terminal disconnected\x1b[0m\n`);
+      try { origStderrWrite(`\x1b[33m[nproxy] SIGHUP received — terminal disconnected\x1b[0m\n`); } catch (_) {}
     });
     process.on('beforeExit', (code) => {
-      process.stderr.write(`\x1b[33m[nproxy] beforeExit(${code}) — event loop drained\x1b[0m\n`);
+      // Flush stderr buffer synchronously before event loop drains
+      try {
+        while (stderrBuffer.length > 0) {
+          const item = stderrBuffer.shift();
+          origStderrWrite(item.data, item.encoding);
+        }
+      } catch (_) {}
+      try { origStderrWrite(`\x1b[33m[nproxy] beforeExit(${code}) — event loop drained\x1b[0m\n`); } catch (_) {}
     });
 
     // Check heap limit and warn on first attention tick; don't guess a timer delay

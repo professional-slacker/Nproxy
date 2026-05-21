@@ -41,4 +41,4 @@ fi
 
 cd "$(dirname "$0")" && SCRIPT_DIR="$(pwd -P)"
 NODE_BIN="$(command -v node)"
-exec "$NODE_BIN" "$SCRIPT_DIR/node/nproxy.js" "--text=$MODE" "${COMMAND_ARGS[@]}"
+exec "$NODE_BIN" --expose-gc "$SCRIPT_DIR/node/nproxy.js" "--text=$MODE" "${COMMAND_ARGS[@]}"
