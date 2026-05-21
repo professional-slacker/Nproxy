@@ -676,11 +676,13 @@ function intercept() {
             process.stderr.write(`\x1b[32m[nproxy] GC freed ${(heapMb - postGc).toFixed(0)}MB, back to ${postGc.toFixed(0)}MB\x1b[0m\n`);
           }
         }
-        // Emergency retry loop: 3 chances then self-terminate
+        // Emergency retry loop: 5 chances then self-terminate (5×200ms = 1s window)
         // Does NOT kill the child process (principle ②: signals relayed, not generated)
         emergencyRetries++;
-        if (emergencyRetries > 3) {
-          process.stderr.write(`\x1b[31;1m[nproxy] EMERGENCY: no recovery after 3 retries — exiting\x1b[0m\n`);
+        const rssNow = (process.memoryUsage().rss / 1024 / 1024).toFixed(1);
+        process.stderr.write(`\x1b[31m[nproxy] EMERGENCY retry ${emergencyRetries}/5 — RSS: ${rssNow}MB\x1b[0m\n`);
+        if (emergencyRetries > 5) {
+          process.stderr.write(`\x1b[31;1m[nproxy] EMERGENCY: no recovery after 5 retries — exiting\x1b[0m\n`);
           process.exit(1);
         }
       } else if (state === 'critical') {
