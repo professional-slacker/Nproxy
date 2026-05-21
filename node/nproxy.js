@@ -176,6 +176,8 @@ class MemoryMonitor {
     this._prevExternal = 0;
     // -- spike count: consecutive spike detections before emergency --
     this._spikeCount = 0;
+    // -- emergency sustained tick counter (fires exit even if _onTransition is not called) --
+    this._emergencyTicks = 0;
     // -- monitor tier: 'rss' | 'split' | 'array' --
     this.monitorTier = opts.monitorTier || DEFAULT_MONITOR;
     // -- guard: installMonitorTier() でプロトタイプ変更済みか --
@@ -316,6 +318,19 @@ class MemoryMonitor {
     if (newState !== this.state) {
       this.state = newState;
       this._onTransition(newState, heapMb);
+    }
+
+    // Emergency sustained check: if state remains emergency across ticks
+    // and _onTransition is not called, force exit after threshold
+    if (this.state === 'emergency' && newState === 'emergency') {
+      this._emergencyTicks++;
+      if (this._emergencyTicks > 5) {
+        const rssNow = (process.memoryUsage().rss / 1024 / 1024).toFixed(1);
+        process.stderr.write(`\x1b[31;1m[nproxy] EMERGENCY: sustained for ${this._emergencyTicks} ticks (RSS: ${rssNow}MB) — exiting\x1b[0m\n`);
+        process.exit(1);
+      }
+    } else {
+      this._emergencyTicks = 0;
     }
 
     this._timer = setTimeout(() => this._tick(), this.tickMs).unref();
@@ -726,6 +741,8 @@ function intercept() {
   installMonitorTier(monitor);
 
   // NearHeapLimitCallback (optional C++ addon — fires BEFORE V8 OOM)
+  // Re-entrant: if already in emergency, GC and check recovery before exiting
+  let _nheapRetries = 0;
   try {
     const nheap = require('./nheap_limit');
     if (nheap.available) {
@@ -733,6 +750,25 @@ function intercept() {
         if (monitor.state !== 'emergency') {
           monitor.state = 'emergency';
           monitor._onTransition('emergency', process.memoryUsage().rss / 1024 / 1024);
+        } else {
+          // Already in emergency — GC and check recovery
+          if (typeof global.gc === 'function') {
+            try { global.gc(); } catch (_) {}
+          }
+          const postGc = process.memoryUsage().rss / 1024 / 1024;
+          if (postGc < monitor.emergencyMb) {
+            monitor.state = 'monitoring';
+            monitor._emergencyTicks = 0;
+            _nheapRetries = 0;
+            process.stderr.write(`\x1b[32m[nproxy] nheap_limit: recovered to ${postGc.toFixed(0)}MB\x1b[0m\n`);
+          } else {
+            _nheapRetries++;
+            process.stderr.write(`\x1b[31m[nproxy] nheap_limit: still emergency ${postGc.toFixed(0)}MB (${_nheapRetries}/5)\x1b[0m\n`);
+            if (_nheapRetries > 5) {
+              process.stderr.write(`\x1b[31;1m[nproxy] nheap_limit: no recovery after 5 retries — exiting\x1b[0m\n`);
+              process.exit(1);
+            }
+          }
         }
       });
     }
