@@ -330,3 +330,111 @@ Layer 4: 5段階MemoryMonitor (200ms polling)
 
 *設計書作成日: 2026-05-12*
 *対象ファイル: node/nproxy.js (781行)*
+
+---
+
+## 11. emergency の先 — 設計思想 (STATUS #14)
+
+### 課題: HTTP的即死モデルからの脱却
+
+nproxy はメモリ逼迫時に `process.exit(1)` で即死する。しかし:
+- nproxy は「システムが簡単に落ちすぎるから」生まれたプログラム
+- それが簡単に落ちるのは本末転倒
+- HTTPは「1リクエスト→1レスポンス→終了」だが、CLI アプリはセッション中に泥臭いネゴシーションが必要
+- メインフレームのように「通知→あがき→リトライ→復元→分離→最後にダンプ」が理想
+
+### 理想的な状態遷移 (6段階)
+
+```
+monitoring → attention → pressure → critical → emergency → fatal → dump death
+```
+
+| 状態 | 役割 |
+|------|------|
+| monitoring | 正常動作 |
+| attention | 軽い警告 (stderr通知) |
+| pressure | リソース節約 (text mode ダウングレード、GC強制) |
+| critical | 子プロセスとの分離準備、ダンプ準備開始 |
+| emergency | 最終リトライ (nheap_limit再発火、メモリ回復全力試行) |
+| fatal | ダンプ書き込み、外部通知 (ファイル/シグナル) |
+| dump death | `process.abort()` または沈黙 (exit はしない) |
+
+**原則:** nproxy は見張り番であって処刑人ではない。殺すかどうかは OS の OOM killer やユーザーの判断。
+
+### ダイイングメッセージ (fatal ダンプ)
+
+`process.exit` の前に以下をファイルに書き出す:
+- `process.memoryUsage()` の詳細
+- `/proc/self/status`
+- 子プロセス状態
+- 状態遷移履歴
+- ファイル名: `nproxy_dump_<pid>_<timestamp>.json`
+
+---
+
+## 12. 入力のファイル化パイプライン (STATUS #14 補足)
+
+### 課題: 大量入力で待たされない
+
+ユーザーが 1GB のテキストを貼り付けたとき、全量をメモリに読み込んでから判断しては遅い。
+入力は「待てない」— ユーザーは入力した瞬間にフィードバックを期待する。
+
+### 設計: 即ファイル化パイプライン
+
+```
+                    ┌─── [通常: チャンク制御ストリーム] ──> 子プロセスへ (256KB制限)
+                    │
+[生の入力 Buffer] ──┼─── [緊急: 呼吸困難 / GC介入] ──────> メモリ解放を待つ
+                    │
+                    └─── [臨界/巨大入力: 即ファイル化] ───> fs.writeSync / tmpファイル
+                                                                 │
+                                                                 └──> 子プロセスへパス通知
+```
+
+### 入口での流量制御
+
+1. stdin の `data` イベントで chunk 累積サイズを監視
+2. 閾値 (例: 50MB) を超えたら即座に子プロセスの stdin を閉じる
+3. 超過分は `/dev/null` に捨てる or ファイルに書きつつ子プロセスには渡さない
+4. ユーザーに「入力が大きすぎます」を stderr で通知
+
+### テンポラリファイルへの逃がし
+
+- 小さい入力 (< 10MB): メモリバッファ (今のまま)
+- 大きい入力 (> 10MB): テンポラリファイル `/tmp/nproxy_stdin_<pid>` に切り替え
+- 巨大な入力 (> 1GB): 遮断 + ダンプ
+
+**原則:** チャンク単位で判断する。全部読み終わってから「1GBでした」では手遅れ。
+
+### ディスク逼迫対策
+
+- ファイル化先を専用ディレクトリ `/tmp/nproxy/` に分離
+- 起動時に利用可能容量をチェック
+- ファイル化開始時に `df` で空き容量確認、不足なら即座に fatal
+- ファイル化中も定期的に空き容量をチェック
+
+---
+
+## 13. process.title フォーマット
+
+### フォーマット
+
+```
+<appName> -via nproxy::<state>
+```
+
+### 表示例
+
+| 状態 | ps表示 |
+|------|--------|
+| monitoring | `openclaude -via nproxy::monitoring` |
+| attention | `openclaude -via nproxy::attention` |
+| pressure | `openclaude -via nproxy::pressure` |
+| critical | `openclaude -via nproxy::critical` |
+| emergency | `openclaude -via nproxy::emergency` |
+
+### 設計意図
+
+- アプリ名を先頭に: 識別性向上
+- `nproxy::` 形式: 状態が一目で分かる
+- メモリ値は表示しない (ps の出力を簡潔に保つ)
