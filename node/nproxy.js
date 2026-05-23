@@ -938,25 +938,27 @@ Preload mode env vars:
       cwd: process.cwd(),
       env,
     });
+    // PTY output: write directly to original stdout, bypass nproxy's write hook
+    // to avoid double-processing (processText + write hook)
+    const origStdout = process.stdout.write.__orig || process.stdout.write;
     child.onData((data) => {
-      const processed = processText(data);
-      if (processed.length > 0) process.stdout.write(processed);
+      origStdout.call(process.stdout, data);
     });
     child.onExit(({ exitCode, signal }) => {
+      if (process.stdin.isTTY && process.stdin.setRawMode) process.stdin.setRawMode(false);
       if (signal) {
         if (signal === 'SIGKILL') process.exit(128 + 9);
         else process.kill(process.pid, signal);
       }
       else process.exit(exitCode);
     });
-    // PTY stdin relay: forward parent stdin -> child
-    if (!process.stdin.isTTY) {
-      // Pipe mode: relay raw bytes
-      process.stdin.on('data', (data) => { child.write(data); });
-    } else {
-      // TTY mode: relay raw bytes (node-pty handles encoding)
-      process.stdin.on('data', (data) => { child.write(data); });
+    // PTY stdin: enable raw mode for interactive key input (arrows, tabs, ctrl+keys)
+    if (process.stdin.isTTY && process.stdin.setRawMode) {
+      process.stdin.setRawMode(true);
     }
+    process.stdin.resume();
+    // PTY stdin relay: forward parent stdin -> child
+    process.stdin.on('data', (data) => { child.write(data); });
     // PTY resize
     process.on('SIGWINCH', () => {
       if (process.stdout.columns && process.stdout.rows) {
