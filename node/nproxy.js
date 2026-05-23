@@ -324,7 +324,7 @@ class MemoryMonitor {
     // and _onTransition is not called, force exit after threshold
     if (this.state === 'emergency' && newState === 'emergency') {
       this._emergencyTicks++;
-      if (this._emergencyTicks > 5) {
+      if (this._emergencyTicks > 25) {
         const rssNow = (process.memoryUsage().rss / 1024 / 1024).toFixed(1);
         process.stderr.write(`\x1b[31;1m[nproxy] EMERGENCY: sustained for ${this._emergencyTicks} ticks (RSS: ${rssNow}MB) — exiting\x1b[0m\n`);
         process.exit(1);
@@ -938,30 +938,48 @@ Preload mode env vars:
       cwd: process.cwd(),
       env,
     });
+    // PTY output: write directly to original stdout, bypass nproxy's write hook
+    // to avoid double-processing (processText + write hook)
+    const origStdout = process.stdout._origWrite || process.stdout.write;
     child.onData((data) => {
-      const processed = processText(data);
-      if (processed.length > 0) process.stdout.write(processed);
+      origStdout.call(process.stdout, data);
     });
     child.onExit(({ exitCode, signal }) => {
+      // Cleanup terminal state set by child process (mouse tracking, alternate screen)
+      try {
+        origStdout.call(process.stdout, '\x1b[?1000l');  // X10 mouse
+        origStdout.call(process.stdout, '\x1b[?1002l');  // button events
+        origStdout.call(process.stdout, '\x1b[?1003l');  // all motion
+        origStdout.call(process.stdout, '\x1b[?1006l');  // SGR mouse mode
+        origStdout.call(process.stdout, '\x1b[?1049l');  // alternate screen
+      } catch (_) {}
+      if (process.stdin.isTTY && process.stdin.setRawMode) process.stdin.setRawMode(false);
       if (signal) {
         if (signal === 'SIGKILL') process.exit(128 + 9);
         else process.kill(process.pid, signal);
       }
       else process.exit(exitCode);
     });
-    // PTY stdin relay: forward parent stdin -> child
-    if (!process.stdin.isTTY) {
-      // Pipe mode: relay raw bytes
-      process.stdin.on('data', (data) => { child.write(data); });
-    } else {
-      // TTY mode: relay raw bytes (node-pty handles encoding)
-      process.stdin.on('data', (data) => { child.write(data); });
+    // PTY stdin: enable raw mode for interactive key input (arrows, tabs, ctrl+keys)
+    if (process.stdin.isTTY && process.stdin.setRawMode) {
+      process.stdin.setRawMode(true);
     }
+    process.stdin.resume();
+    // PTY stdin relay: forward parent stdin -> child
+    process.stdin.on('data', (data) => { child.write(data); });
     // PTY resize
     process.on('SIGWINCH', () => {
       if (process.stdout.columns && process.stdout.rows) {
         child.resize(process.stdout.columns, process.stdout.rows);
       }
+    });
+    // PTY crash guard: ensure terminal state is restored on unexpected exit
+    process.on('exit', () => {
+      try {
+        const out = process.stdout._origWrite || process.stdout.write;
+        out.call(process.stdout, '\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1049l');
+        if (process.stdin.isTTY && process.stdin.setRawMode) process.stdin.setRawMode(false);
+      } catch (_) {}
     });
   } else {
     // ---- Pipe mode: child_process.spawn ----
