@@ -324,7 +324,7 @@ class MemoryMonitor {
     // and _onTransition is not called, force exit after threshold
     if (this.state === 'emergency' && newState === 'emergency') {
       this._emergencyTicks++;
-      if (this._emergencyTicks > 5) {
+      if (this._emergencyTicks > 25) {
         const rssNow = (process.memoryUsage().rss / 1024 / 1024).toFixed(1);
         process.stderr.write(`\x1b[31;1m[nproxy] EMERGENCY: sustained for ${this._emergencyTicks} ticks (RSS: ${rssNow}MB) — exiting\x1b[0m\n`);
         process.exit(1);
