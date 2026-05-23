@@ -940,11 +940,19 @@ Preload mode env vars:
     });
     // PTY output: write directly to original stdout, bypass nproxy's write hook
     // to avoid double-processing (processText + write hook)
-    const origStdout = process.stdout.write.__orig || process.stdout.write;
+    const origStdout = process.stdout._origWrite || process.stdout.write;
     child.onData((data) => {
       origStdout.call(process.stdout, data);
     });
     child.onExit(({ exitCode, signal }) => {
+      // Cleanup terminal state set by child process (mouse tracking, alternate screen)
+      try {
+        origStdout.call(process.stdout, '\x1b[?1000l');  // X10 mouse
+        origStdout.call(process.stdout, '\x1b[?1002l');  // button events
+        origStdout.call(process.stdout, '\x1b[?1003l');  // all motion
+        origStdout.call(process.stdout, '\x1b[?1006l');  // SGR mouse mode
+        origStdout.call(process.stdout, '\x1b[?1049l');  // alternate screen
+      } catch (_) {}
       if (process.stdin.isTTY && process.stdin.setRawMode) process.stdin.setRawMode(false);
       if (signal) {
         if (signal === 'SIGKILL') process.exit(128 + 9);
@@ -964,6 +972,14 @@ Preload mode env vars:
       if (process.stdout.columns && process.stdout.rows) {
         child.resize(process.stdout.columns, process.stdout.rows);
       }
+    });
+    // PTY crash guard: ensure terminal state is restored on unexpected exit
+    process.on('exit', () => {
+      try {
+        const out = process.stdout._origWrite || process.stdout.write;
+        out.call(process.stdout, '\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1049l');
+        if (process.stdin.isTTY && process.stdin.setRawMode) process.stdin.setRawMode(false);
+      } catch (_) {}
     });
   } else {
     // ---- Pipe mode: child_process.spawn ----
