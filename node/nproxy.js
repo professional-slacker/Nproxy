@@ -1010,21 +1010,43 @@ Preload mode env vars:
       });
     }
 
-    // Adjust OOM score for child process (Linux only)
-    if (process.platform === 'linux' && child.pid) {
-      try {
-        const fs = require('fs');
-        // Set OOM score adjustment to -500 (less likely to be killed)
-        // Range: -1000 (never kill) to 1000 (always kill)
-        const oomScoreAdj = parseInt(process.env.NPROXY_OOM_SCORE_ADJ || '-500', 10);
-        fs.writeFileSync(`/proc/${child.pid}/oom_score_adj`, String(oomScoreAdj));
-        process.stderr.write(`[nproxy] child OOM score adjusted to ${oomScoreAdj}\n`);
-      } catch (e) {
-        // /proc may not be available or permission denied
-        // Continue without OOM score adjustment
-        process.stderr.write(`[nproxy] warning: could not adjust OOM score: ${e.message}\n`);
-      }
-    }
+     // Adjust OOM score for child process (Linux only)
+     if (process.platform === 'linux' && child.pid) {
+       try {
+         const fs = require('fs');
+         // Set OOM score adjustment to -500 (less likely to be killed)
+         // Range: -1000 (never kill) to 1000 (always kill)
+         const oomScoreAdj = parseInt(process.env.NPROXY_OOM_SCORE_ADJ || '-500', 10);
+         fs.writeFileSync(`/proc/${child.pid}/oom_score_adj`, String(oomScoreAdj));
+         process.stderr.write(`[nproxy] child OOM score adjusted to ${oomScoreAdj}\n`);
+       } catch (e) {
+         // /proc may not be available or permission denied
+         // Try fallback to cgroup v2 if available
+         try {
+           const fs = require('fs');
+           const cgroupPath = '/sys/fs/cgroup';
+           if (fs.existsSync(cgroupPath)) {
+             // Try to create a nproxy subdirectory and set memory.max
+             const userID = process.getuid ? process.getuid() : 1000; // fallback
+             const nproxyCgroup = `${cgroupPath}/user.slice/user-${userID}.slice/nproxy`;
+             if (!fs.existsSync(nproxyCgroup)) {
+               fs.mkdirSync(nproxyCgroup, { recursive: true });
+             }
+             // Set memory limit to 80% of system memory as fallback
+             const totalMem = fs.readFileSync('/proc/meminfo', 'utf8')
+               .match(/MemTotal:\s+(\d+)/)[1];
+             const memoryLimit = Math.floor(parseInt(totalMem, 10) * 0.8); // 80% in kB
+             fs.writeFileSync(`${nproxyCgroup}/memory.max`, `${memoryLimit}k`);
+             fs.writeFileSync(`${nproxyCgroup}/cgroup.procs`, child.pid.toString());
+             process.stderr.write(`[nproxy] applied cgroup v2 memory limit: ${memoryLimit}kB\n");
+           }
+         } catch (cgroupErr) {
+           // Fallback also failed
+         }
+         // Continue without OOM score adjustment
+         process.stderr.write(`[nproxy] warning: could not adjust OOM score: ${e.message}\n`);
+       }
+     }
 
     // Stdin relay: forward parent stdin -> child stdin
     // This ensures nproxy intercepts all IO (not just stdout/stderr)
@@ -1042,91 +1064,220 @@ Preload mode env vars:
     // Memory monitor state: monitoring | attention | pressure | critical | emergency
     let childMonState = 'monitoring';
 
-    // Select-style readable monitoring for stdout
-    child.stdout.on('readable', () => {
-      let chunk;
-      while ((chunk = child.stdout.read()) !== null) {
-        const processed = processText(chunk);
-        if (processed.length === 0) continue;
-        // Under memory pressure: apply backpressure
-        if (childMonState === 'emergency' || childMonState === 'critical') {
-          const ok = process.stdout.write(processed);
-          if (!ok) {
-            // Wait for drain before continuing
-            process.stdout.once('drain', () => {
-              // Resume reading after drain
-            });
-            break;
-          }
-          continue;
-        }
-        if (childMonState === 'pressure') {
-          const ok = process.stdout.write(processed);
-          if (!ok) {
-            process.stdout.once('drain', () => {});
-            break;
-          }
-          continue;
-        }
-        const ok = process.stdout.write(processed);
-        if (!ok) {
-          // Backpressure: stop reading until drain
-          process.stdout.once('drain', () => {
-            // Resume reading after drain
-            child.stdout.read(0);  // Trigger readable event
-          });
-          break;
-        }
-      }
-    });
+     // Select-style readable monitoring for stdout
+     child.stdout.on('readable', () => {
+       let chunk;
+       while ((chunk = child.stdout.read()) !== null) {
+         const processed = processText(chunk);
+         if (processed.length === 0) continue;
+         
+         // State-differentiated control
+         let shouldWrite = true;
+         let waitForDrain = false;
+         
+         switch (childMonState) {
+           case 'emergency':
+             // Emergency: immediate backpressure, also throttle stdin
+             if (child.stdin) {
+               child.stdin.pause(); // Throttle child's stdin
+             }
+             shouldWrite = false; // Drop output in emergency to prevent buffering
+             break;
+           case 'critical':
+             // Critical: strong backpressure with shorter writes
+             if (processed.length > 1024) {
+               // Split large chunks in critical state
+               const parts = [];
+               for (let i = 0; i < processed.length; i += 1024) {
+                 parts.push(processed.slice(i, i + 1024));
+               }
+               for (const part of parts) {
+                 const ok = process.stdout.write(part);
+                 if (!ok) {
+                   waitForDrain = true;
+                   break;
+                 }
+               }
+               if (waitForDrain) {
+                 process.stdout.once('drain', () => {
+                   // Resume reading after drain
+                   child.stdout.read(0); // Trigger readable event
+                 });
+                 break;
+               }
+               continue;
+             }
+             // Fall through to normal write for small chunks
+           case 'pressure':
+             // Pressure: moderate backpressure
+             shouldWrite = true;
+             break;
+           case 'attention':
+             // Attention: light backpressure with delay
+             shouldWrite = true;
+             // Small delay to prevent thrashing - yield to event loop periodically
+             // This is a simple approximation - in real implementation, we might want
+             // to use a more sophisticated rate limiting approach
+             break;
+           default: // monitoring
+             // Monitoring: normal flow
+             shouldWrite = true;
+         }
+         
+         if (!shouldWrite) {
+           continue;
+         }
+         
+         const ok = process.stdout.write(processed);
+         if (!ok && !waitForDrain) {
+           // Backpressure: stop reading until drain
+           waitForDrain = true;
+           process.stdout.once('drain', () => {
+             // Resume reading after drain
+             child.stdout.read(0); // Trigger readable event
+           });
+           break;
+         }
+       }
+     });
 
-    // Select-style readable monitoring for stderr
-    child.stderr.on('readable', () => {
-      let chunk;
-      while ((chunk = child.stderr.read()) !== null) {
-        const processed = processText(chunk);
-        if (processed.length === 0) continue;
-        if (childMonState === 'emergency' || childMonState === 'critical') {
-          const ok = process.stderr.write(processed);
-          if (!ok) {
-            process.stderr.once('drain', () => {});
-            break;
-          }
-          continue;
-        }
-        if (childMonState === 'pressure') {
-          const ok = process.stderr.write(processed);
-          if (!ok) {
-            process.stderr.once('drain', () => {});
-            break;
-          }
-          continue;
-        }
-        const ok = process.stderr.write(processed);
-        if (!ok) {
-          process.stderr.once('drain', () => {
-            child.stderr.read(0);
-          });
-          break;
-        }
-      }
-    });
+     // Select-style readable monitoring for stderr
+     child.stderr.on('readable', () => {
+       let chunk;
+       while ((chunk = child.stderr.read()) !== null) {
+         const processed = processText(chunk);
+         if (processed.length === 0) continue;
+         
+         // State-differentiated control for stderr
+         let shouldWrite = true;
+         let waitForDrain = false;
+         
+         switch (childMonState) {
+           case 'emergency':
+             // Emergency: immediate backpressure, drop stderr to prevent buffering
+             shouldWrite = false; // Drop stderr output in emergency
+             break;
+           case 'critical':
+             // Critical: strong backpressure with shorter writes for stderr
+             if (processed.length > 1024) {
+               // Split large chunks in critical state
+               const parts = [];
+               for (let i = 0; i < processed.length; i += 1024) {
+                 parts.push(processed.slice(i, i + 1024));
+               }
+               for (const part of parts) {
+                 const ok = process.stderr.write(part);
+                 if (!ok) {
+                   waitForDrain = true;
+                   break;
+                 }
+               }
+               if (waitForDrain) {
+                 process.stderr.once('drain', () => {
+                   // Resume reading after drain
+                   child.stderr.read(0); // Trigger readable event
+                 });
+                 break;
+               }
+               continue;
+             }
+             // Fall through to normal write for small chunks
+           case 'pressure':
+             // Pressure: moderate backpressure
+             shouldWrite = true;
+             break;
+           case 'attention':
+             // Attention: light backpressure
+             shouldWrite = true;
+             break;
+           default: // monitoring
+             // Monitoring: normal flow
+             shouldWrite = true;
+         }
+         
+         if (!shouldWrite) {
+           continue;
+         }
+         
+         const ok = process.stderr.write(processed);
+         if (!ok && !waitForDrain) {
+           // Backpressure: stop reading until drain
+           waitForDrain = true;
+           process.stderr.once('drain', () => {
+             // Resume reading after drain
+             child.stderr.read(0); // Trigger readable event
+           });
+           break;
+         }
+       }
+     });
 
-    // Memory monitor: track child RSS via /proc/{pid}/status
-    const childMon = new MemoryMonitor({
-      childPid: child.pid,
-      attentionMb: DEFAULT_ATTENTION_MB,
-      pressureMb: DEFAULT_PRESSURE_MB,
-      criticalMb: DEFAULT_CRITICAL_MB,
-      emergencyMb: DEFAULT_EMERGENCY_MB,
-      onTransition: (state, heapMb) => {
-        childMonState = state;
-        if (process.env.NPROXY_MEMLOG) {
-          process.stderr.write(`[nproxy] childRSS=${childMon.rssMb}MB heap=${heapMb}MB state=${state}\n`);
-        }
-      },
-    });
-    childMon.start();
+     // Memory monitor: track child RSS via /proc/{pid}/status
+     const childMon = new MemoryMonitor({
+       childPid: child.pid,
+       attentionMb: DEFAULT_ATTENTION_MB,
+       pressureMb: DEFAULT_PRESSURE_MB,
+       criticalMb: DEFAULT_CRITICAL_MB,
+       emergencyMb: DEFAULT_EMERGENCY_MB,
+       onTransition: (state, heapMb) => {
+         childMonState = state;
+         if (process.env.NPROXY_MEMLOG) {
+           process.stderr.write(`[nproxy] childRSS=${childMon.rssMb}MB heap=${heapMb}MB state=${state}\n`);
+         }
+       },
+     });
+     childMon.start();
+
+     // CPU watchdog for child process
+     let childLastCPU = { lastTime: 0, lastTotal: 0 };
+     let cpuEmergencyCounter = 0;
+     const CPU_EMERGENCY_THRESHOLD = 95; // %
+     const CPU_EMERGENCY_DURATION = 5; // seconds of consecutive high CPU to trigger emergency
+
+     const cpuWatchdogInterval = setInterval(() => {
+       if (!child.pid) {
+         cpuEmergencyCounter = 0;
+         return;
+       }
+       try {
+         const fs = require('fs');
+         const stat = fs.readFileSync(`/proc/${child.pid}/stat`, 'utf8');
+         const parts = stat.split(' ');
+         const utime = parseInt(parts[13], 10);
+         const stime = parseInt(parts[14], 10);
+         const cutime = parseInt(parts[15], 10);
+         const cstime = parseInt(parts[16], 10);
+         const totalTime = utime + stime + cutime + cstime;
+         const starttime = parseInt(parts[21], 10);
+         const clockTicks = require('os').constants.clocktick || 100; // fallback
+         const seconds = (Date.now() / 1000 - starttime / clockTicks);
+         let usage = 0;
+         if (childLastCPU.lastTime > 0) {
+           const timeDiff = seconds - childLastCPU.lastTime;
+           if (timeDiff > 0) {
+             usage = ((totalTime - childLastCPU.lastTotal) / timeDiff) / clockTicks * 100;
+           }
+         }
+         childLastCPU = { lastTime: seconds, lastTotal: totalTime };
+
+         if (usage >= CPU_EMERGENCY_THRESHOLD) {
+           cpuEmergencyCounter++;
+           if (cpuEmergencyCounter >= CPU_EMERGENCY_DURATION) {
+             // Trigger emergency state in the memory monitor
+             childMon.state = 'emergency';
+             childMon._onTransition('emergency', childMon.rssMb);
+             cpuEmergencyCounter = 0; // reset after triggering
+             process.stderr.write(`[nproxy] CPU emergency triggered: ${usage.toFixed(1)}% for ${CPU_EMERGENCY_DURATION}s\n`);
+           }
+         } else {
+           cpuEmergencyCounter = 0;
+         }
+       } catch (e) {
+         // process may have exited or /proc not accessible
+         cpuEmergencyCounter = 0;
+       }
+     }, 1000); // every second
+     cpuWatchdogInterval.unref();
 
     // Signal relay (pipe mode) — guard for Windows where some signals are undefined
     const signals = ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGUSR1', 'SIGUSR2', 'SIGWINCH'];
