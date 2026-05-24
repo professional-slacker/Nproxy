@@ -1,0 +1,204 @@
+#!/bin/bash
+# psd — プロセスの状態を詳細表示
+# usage: psd <PID>
+
+set -u
+
+pid="${1:-}"
+
+usage() {
+    echo "usage: psd <PID>"
+    echo ""
+    echo "  任意のPIDの状態をまとめて表示"
+    exit 1
+}
+
+if [ -z "$pid" ]; then usage; fi
+if ! [ -d "/proc/$pid" ]; then echo "PID $pid: 存在しません"; exit 1; fi
+
+echo "=========================================="
+echo " PID: $pid"
+echo "=========================================="
+
+# === 基本状態 ===
+state=$(cat /proc/$pid/status 2>/dev/null | grep -E "^(Name|State|Tgid|Pid|PPid|Uid|TracerPid|SigPnd|ShdPnd|SigBlk|SigIgn|SigCgt)" | awk -F'\t' '{print $1}')
+name=$(cat /proc/$pid/comm 2>/dev/null)
+echo " コマンド: $name"
+echo "$state"
+
+echo ""
+echo "--- スレッド一覧 ---"
+ps -T -p $pid 2>/dev/null -o pid,spid,stat,pcpu,wchan:20,comm --no-headers | sort
+
+echo ""
+echo "--- カーネルスタック ---"
+if [ -r /proc/$pid/stack ]; then
+    cat /proc/$pid/stack 2>/dev/null
+elif command -v sudo >/dev/null; then
+    sudo cat /proc/$pid/stack 2>/dev/null || echo " (stack読めず)"
+else
+    echo " (stack読めず)"
+fi
+
+echo ""
+echo "--- wchan ---"
+cat /proc/$pid/wchan 2>/dev/null
+
+echo ""
+echo "--- CPU時間 ---"
+# utime(14) stime(15) cutime(16) cstime(17)
+stat_file=/proc/$pid/stat
+if [ -r "$stat_file" ]; then
+    awk '{
+        utime=$14/100; stime=$15/100; cutime=$16/100; cstime=$17/100
+        total=utime+stime+cutime+cstime
+        printf "  ユーザー: %.2fs  システム: %.2fs\n  子ユーザー: %.2fs  子システム: %.2fs\n  合計: %.2fs\n", utime, stime, cutime, cstime, total
+    }' "$stat_file"
+fi
+
+echo ""
+echo "--- メモリ ---"
+rss=$(awk '/VmRSS:/{print $2}' /proc/$pid/status)
+vmsize=$(awk '/VmSize:/{print $2}' /proc/$pid/status)
+anon=$(awk '/RssAnon:/{print $2}' /proc/$pid/status)
+swap=$(awk '/VmSwap:/{print $2}' /proc/$pid/status)
+echo "  RSS: ${rss:-?} kB"
+echo "  Anon: ${anon:-?} kB"
+echo "  VmSize: ${vmsize:-?} kB"
+echo "  Swap: ${swap:-?} kB"
+
+echo ""
+echo "--- 親子関係 ---"
+ppid=$(awk '/PPid/{print $2}' /proc/$pid/status)
+echo "  PPID=$ppid"
+if [ -d /proc/$ppid ]; then
+    pcomm=$(cat /proc/$ppid/comm 2>/dev/null)
+    pcmd=$(cat /proc/$ppid/cmdline 2>/dev/null | tr '\0' ' ')
+    pstat=$(ps -o stat --no-headers -p $ppid 2>/dev/null | xargs)
+    plstart=$(ps -o lstart --no-headers -p $ppid 2>/dev/null | xargs)
+    echo "  親コマンド: $pcomm ($ppid) [$pstat]"
+    echo "  親起動日時: $plstart"
+    echo "  親cmdline: $pcmd"
+fi
+echo "  子プロセス:"
+c="/proc/$pid/task/$pid/children"
+if [ -r "$c" ]; then
+    for child in $(cat "$c" 2>/dev/null); do
+        if [ -d /proc/$child ]; then
+            echo "    $child ($(cat /proc/$child/comm 2>/dev/null))"
+        fi
+    done
+fi
+
+echo ""
+echo "--- ファイルディスクリプタ ---"
+fd_count=$(ls /proc/$pid/fd 2>/dev/null | wc -l)
+echo "  開いてるFD数: $fd_count"
+ls -la /proc/$pid/fd 2>/dev/null | head -20 | while read line; do
+    echo "  $line"
+done
+if [ "$fd_count" -gt 20 ]; then echo "  ... ($fd_count total)"; fi
+
+echo ""
+echo "--- 環境変数 (抜粋) ---"
+if [ -r /proc/$pid/environ ]; then
+    tr '\0' '\n' < /proc/$pid/environ 2>/dev/null | grep -E "^(DISPLAY|TERM|PATH|HOME|USER|SESSION|XDG|CLUTTER|WAYLAND|NPROXY|OPENCLAUDE|OPENAI|ANTHROPIC)" | head -15 | while read line; do
+        echo "  $line"
+    done
+fi
+
+echo ""
+echo "--- 制限値 ---"
+if [ -r /proc/$pid/limits ]; then
+    grep -E "Max processes|Max open files" /proc/$pid/limits 2>/dev/null
+fi
+
+echo ""
+echo "--- システムコール中断位置 ---"
+if [ -r /proc/$pid/syscall ]; then
+    cat /proc/$pid/syscall 2>/dev/null
+fi
+
+echo ""
+echo "--- io_uring (イベント駆動) ---"
+for fd in $(ls /proc/$pid/fd 2>/dev/null); do
+    target=$(readlink /proc/$pid/fd/$fd 2>/dev/null)
+    if echo "$target" | grep -q io_uring; then
+        echo "  FD $fd: $target"
+        if [ -r /proc/$pid/fdinfo/$fd ]; then
+            cat /proc/$pid/fdinfo/$fd 2>/dev/null
+        fi
+    fi
+done
+
+echo ""
+echo "--- ネットワーク接続 ---"
+if command -v ss >/dev/null; then
+    ss -antp 2>/dev/null | grep "pid=$pid," || echo "  (ssに情報なし)"
+fi
+echo "  TCP sockets in /proc/"
+if [ -r /proc/$pid/net/tcp ]; then
+    awk 'NR>1{print "  local=" $2 " remote=" $3 " state=" $4}' /proc/$pid/net/tcp 2>/dev/null | head -20
+fi
+echo "  UDP sockets:"
+if [ -r /proc/$pid/net/udp ]; then
+    awk 'NR>1{print "  local=" $2 " state=" $4}' /proc/$pid/net/udp 2>/dev/null | head -10
+fi
+
+echo ""
+echo "--- mmap一覧 ---"
+if [ -r /proc/$pid/maps ]; then
+    echo "  (先頭10エントリ)"
+    head -10 /proc/$pid/maps 2>/dev/null
+fi
+
+echo ""
+echo "=========================================="
+
+# === 停止プロセス復帰トライ ===
+if echo "$state" | grep -q "T (stopped)"; then
+    echo ">> 停止中プロセス検出。復帰を試みます..."
+    echo ""
+    tty_path=$(readlink /proc/$pid/fd/0 2>/dev/null || echo "?")
+    echo "  制御端末: $tty_path"
+    ppid=$(awk '/PPid/{print $2}' /proc/$pid/status)
+    echo "  親PID: $ppid ($(cat /proc/$ppid/comm 2>/dev/null))"
+    echo ""
+
+    # 各種復帰手段
+    echo "  1) SIGCONT 送信"
+    kill -CONT $pid 2>/dev/null
+    rc=$?
+    sleep 0.5
+    newstat=$(cat /proc/$pid/status 2>/dev/null | awk '/^State/{print $2}')
+    echo "     結果: exit=$rc  状態=$newstat"
+    echo ""
+
+    if [ "$newstat" = "T" ]; then
+        echo "  2) プロセスグループに SIGCONT"
+        pgid=$(awk '/NSpgid/{print $2}' /proc/$pid/status)
+        echo "     PGID: $pgid"
+        kill -CONT -- -$pgid 2>/dev/null
+        sleep 0.5
+        newstat=$(cat /proc/$pid/status 2>/dev/null | awk '/^State/{print $2}')
+        echo "     結果: 状態=$newstat"
+        echo ""
+    fi
+
+    if [ "$newstat" = "T" ]; then
+        echo "  3) SIGCONT (全スレッド)"
+        for spid in $(ps -T -p $pid --no-headers -o spid 2>/dev/null); do
+            kill -CONT $spid 2>/dev/null
+        done
+        sleep 0.5
+        newstat=$(cat /proc/$pid/status 2>/dev/null | awk '/^State/{print $2}')
+        echo "     結果: 状態=$newstat"
+        echo ""
+    fi
+
+    if [ "$newstat" = "T" ]; then
+        echo "  4) SIGKILL（復帰不可のため強制終了）実行するには: sudo kill -9 $pid"
+    else
+        echo "  ✓ 復帰成功！新しい状態: $newstat"
+    fi
+fi

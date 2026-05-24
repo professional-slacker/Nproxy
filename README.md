@@ -132,11 +132,16 @@ NPROXY_MONITOR=auto|rss|split|array         # memory monitoring tier (default: a
   #   array   — rss + split features + Array proxy for push/unshift/splice
 NPROXY_DEBUG=1                                 # enable chunk split / debug logs (default: off)
 NPROXY_MEMLOG=60                               # periodic memory log in seconds (0=OFF)
+NPROXY_EMERGENCY_MB=1800                       # override emergency threshold (default: heap_limit×80%)
+NODE_OPT_MAX_OLD=4096                          # override heap limit for spawn mode (default: auto-detected)
 ```
 
 - `process.stdout.write` hook + memory monitoring with auto mode degradation
 - **256KB chunk splitting** — any write exceeding 256KB is split into `MAX_CHUNK_NORMAL` pieces
-- **5-stage memory guard**: monitoring → attention(256MB) → pressure(512MB) → critical(1024MB) → emergency(1280MB)
+- **5-stage memory guard**: monitoring → attention(256MB) → pressure(512MB) → critical(1024MB) → emergency(ヒープ上限の80%, デフォルト動的計算)
+  - emergency閾値は環境変数 `NPROXY_EMERGENCY_MB` で上書き可能
+  - `nproxy-run.sh` 使用時は起動時にNodeヒープ上限を動的取得し、その80%を自動設定
+  - 例: ヒープ上限2240MB → emergency 1792MB
   - pressure: auto-switch to strip-ansi, reduces chunk size to 64KB
   - critical: chunk size reduced to 4KB, near-emergency
   - emergency: bypass coalescing, write immediately
@@ -214,6 +219,29 @@ cargo run --release -- --text=strip-ansi -- command [args...]
 ├── result/         Legacy Node prototypes
 ├── doc/            Design documentation
 └── README.md
+```
+
+---
+
+## Tools
+
+### `psd` — process state dumper
+
+Shell script for one-shot process inspection with auto-recovery.  
+Displays state, threads, kernel stack, memory, FDs, sockets, io_uring, syscall, and more.  
+For stopped (T) processes, attempts 3-stage recovery (SIGCONT → PGID → per-thread).
+
+```bash
+./psd <PID>
+./psd <PID> > result.txt 2>&1      # save to file
+```
+
+### `monitor-status.sh` — memory guard status
+
+Alias for `nproxy-run.sh status` — shows current memory guard state, RSS, heap usage, and retry counts for all running sessions.
+
+```bash
+./monitor-status.sh
 ```
 
 ---
