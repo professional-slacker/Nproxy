@@ -1057,17 +1057,42 @@ Preload mode env vars:
 
     // Adjust OOM score for child process (Linux only)
     if (process.platform === 'linux' && child.pid) {
+      const fs = require('fs');
+      const oomScoreAdj = parseInt(process.env.NPROXY_OOM_SCORE_ADJ || '-500', 10);
+      let oomScoreSet = false;
       try {
-        const fs = require('fs');
         // Set OOM score adjustment to -500 (less likely to be killed)
         // Range: -1000 (never kill) to 1000 (always kill)
-        const oomScoreAdj = parseInt(process.env.NPROXY_OOM_SCORE_ADJ || '-500', 10);
         fs.writeFileSync(`/proc/${child.pid}/oom_score_adj`, String(oomScoreAdj));
         process.stderr.write(`[nproxy] child OOM score adjusted to ${oomScoreAdj}\n`);
+        oomScoreSet = true;
       } catch (e) {
-        // /proc may not be available or permission denied
-        // Continue without OOM score adjustment
         process.stderr.write(`[nproxy] warning: could not adjust OOM score: ${e.message}\n`);
+      }
+
+      // cgroup v2 fallback: set memory.high if oom_score_adj failed
+      if (!oomScoreSet && fs.existsSync('/sys/fs/cgroup/cgroup.controllers')) {
+        try {
+          const cgroupPath = fs.readFileSync(`/proc/${child.pid}/cgroup`, 'utf8')
+            .split('\n')
+            .find(l => l.startsWith('0::'))
+            ?.slice(3)?.trim();
+          if (cgroupPath) {
+            const memHighPath = `/sys/fs/cgroup/${cgroupPath}/memory.high`;
+            if (fs.existsSync(memHighPath)) {
+              // Set memory.high to current RSS + 256MB headroom
+              const currentHigh = fs.readFileSync(memHighPath, 'utf8').trim();
+              if (currentHigh === 'max' || currentHigh === '') {
+                // Only set if not already constrained
+                const rssBytes = (parseInt(process.env.NPROXY_EMERGENCY_MB || '1280', 10) + 256) * 1024 * 1024;
+                fs.writeFileSync(memHighPath, String(rssBytes));
+                process.stderr.write(`[nproxy] cgroup v2 memory.high set to ${Math.round(rssBytes / 1024 / 1024)}MB\n`);
+              }
+            }
+          }
+        } catch (e) {
+          process.stderr.write(`[nproxy] warning: cgroup v2 fallback failed: ${e.message}\n`);
+        }
       }
     }
 
