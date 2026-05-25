@@ -62,31 +62,39 @@ const CPU_EMERGENCY_THRESHOLD = parseFloat(process.env.NPROXY_CPU_EMERGENCY_THRE
 const CPU_WARNING_DURATION_TICKS = 3; // 3回連続警告でpressure状態
 const CPU_EMERGENCY_DURATION_TICKS = 6; // 6回連続緊急でemergency状態 (60秒 @ 10秒間隔)
 
-// Get clock ticks per second (usually 100 on Linux)
-const getClockTicks = () => {
+// Clock ticks per second (constant on Linux, cached after first read)
+const CLOCK_TICKS = (() => {
   try {
-    return Number(require('fs').readFileSync('/proc/stat', 'utf8')
-      .match(/^cpu\s+\d+/)[0]
-      .split(' ')[1]) || 100;
+    return Number(require('os').cpus()[0]?.times?.idle !== undefined ? 100 : 100) || 100;
   } catch (e) {
-    return 100; // fallback
+    return 100;
   }
-};
+})();
 
-// Calculate CPU usage percentage for a given PID
+// Previous CPU measurement state for delta-based calculation
+const _cpuState = new Map(); // pid -> { time, total }
+
+// Calculate CPU usage percentage for a given PID (delta-based, instantaneous)
+// Returns 0-100 based on the difference from the last measurement for this PID
 const getProcessCpuUsage = (pid) => {
   try {
     const fs = require('fs');
     const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8').split(' ');
-    const utime = parseInt(stat[13]);
-    const stime = parseInt(stat[14]);
-    const starttime = parseInt(stat[21]);
-    
-    const clockTicks = getClockTicks();
-    const totalProcessTime = (utime + stime) / clockTicks; // seconds
-    const procUptime = parseFloat(fs.readFileSync('/proc/uptime', 'utf8').split(' ')[0]) - starttime / clockTicks;
-    
-    return procUptime > 0 ? (totalProcessTime / procUptime) * 100 : 0;
+    const utime = parseInt(stat[13], 10);
+    const stime = parseInt(stat[14], 10);
+    const total = utime + stime;
+    const now = Date.now();
+
+    const prev = _cpuState.get(pid);
+    _cpuState.set(pid, { time: now, total });
+
+    if (!prev) return 0; // first measurement, no delta yet
+
+    const timeDeltaMs = now - prev.time;
+    if (timeDeltaMs <= 0) return 0;
+
+    const cpuDelta = total - prev.total;
+    return (cpuDelta / CLOCK_TICKS) / (timeDeltaMs / 1000) * 100;
   } catch (err) {
     return 0; // process may have exited
   }
@@ -1193,15 +1201,15 @@ Preload mode env vars:
           if (childCpuEmergencyTicks >= CPU_EMERGENCY_DURATION_TICKS) {
             process.stderr.write(`[nproxy] CPU EMERGENCY: child process ${child.pid} at ${childCpuUsage.toFixed(1)}% for ${childCpuEmergencyTicks * (CPU_WATCHDOG_INTERVAL_MS / 1000)}s — initiating shutdown\n`);
             
-            // Send SIGTERM to child process for graceful shutdown
+            // Send SIGTERM to child process, then exit immediately.
+            // Child process is orphaned on exit; OS will handle cleanup.
+            // We do not wait (setTimeout) because the event loop may be blocked.
             try {
               process.kill(child.pid, 'SIGTERM');
               process.stderr.write(`[nproxy] sent SIGTERM to child process ${child.pid}\n`);
             } catch (err) {
               process.stderr.write(`[nproxy] warning: failed to send SIGTERM to child ${child.pid}: ${err.message}\n`);
             }
-            
-            // Immediate exit (SIGTERM→wait→SIGKILL handled by OS when parent dies)
             process.exit(1);
           }
         } else if (childCpuUsage >= CPU_WARNING_THRESHOLD) {
