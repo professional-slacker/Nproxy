@@ -55,6 +55,51 @@ const DEFAULT_EMERGENCY_MB = parseInt(process.env.NPROXY_EMERGENCY_MB || String(
 const DEFAULT_TICK_MS = parseInt(process.env.NPROXY_TICK_MS || '200', 10);
 const DEFAULT_MONITOR = process.env.NPROXY_MONITOR || 'auto'; // auto | rss | split | array
 
+// CPU Watchdog constants
+const CPU_WATCHDOG_INTERVAL_MS = parseInt(process.env.NPROXY_CPU_WATCHDOG_INTERVAL_MS || '10000', 10); // 10秒間隔
+const CPU_WARNING_THRESHOLD = parseFloat(process.env.NPROXY_CPU_WARNING_THRESHOLD || '80'); // 80%以上で警告
+const CPU_EMERGENCY_THRESHOLD = parseFloat(process.env.NPROXY_CPU_EMERGENCY_THRESHOLD || '95'); // 95%以上で緊急事態
+const CPU_WARNING_DURATION_TICKS = 3; // 3回連続警告でpressure状態
+const CPU_EMERGENCY_DURATION_TICKS = 6; // 6回連続緊急でemergency状態 (60秒 @ 10秒間隔)
+
+// Clock ticks per second (constant on Linux, cached after first read)
+const CLOCK_TICKS = (() => {
+  try {
+    return Number(require('os').cpus()[0]?.times?.idle !== undefined ? 100 : 100) || 100;
+  } catch (e) {
+    return 100;
+  }
+})();
+
+// Previous CPU measurement state for delta-based calculation
+const _cpuState = new Map(); // pid -> { time, total }
+
+// Calculate CPU usage percentage for a given PID (delta-based, instantaneous)
+// Returns 0-100 based on the difference from the last measurement for this PID
+const getProcessCpuUsage = (pid) => {
+  try {
+    const fs = require('fs');
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8').split(' ');
+    const utime = parseInt(stat[13], 10);
+    const stime = parseInt(stat[14], 10);
+    const total = utime + stime;
+    const now = Date.now();
+
+    const prev = _cpuState.get(pid);
+    _cpuState.set(pid, { time: now, total });
+
+    if (!prev) return 0; // first measurement, no delta yet
+
+    const timeDeltaMs = now - prev.time;
+    if (timeDeltaMs <= 0) return 0;
+
+    const cpuDelta = total - prev.total;
+    return (cpuDelta / CLOCK_TICKS) / (timeDeltaMs / 1000) * 100;
+  } catch (err) {
+    return 0; // process may have exited
+  }
+};
+
 // ---- CLI arg parsing ----
 function parseArgs(argv) {
   const out = { text: null, textLog: null, pty: false, help: false, app: null, appArgs: [] };
@@ -1012,17 +1057,42 @@ Preload mode env vars:
 
     // Adjust OOM score for child process (Linux only)
     if (process.platform === 'linux' && child.pid) {
+      const fs = require('fs');
+      const oomScoreAdj = parseInt(process.env.NPROXY_OOM_SCORE_ADJ || '-500', 10);
+      let oomScoreSet = false;
       try {
-        const fs = require('fs');
         // Set OOM score adjustment to -500 (less likely to be killed)
         // Range: -1000 (never kill) to 1000 (always kill)
-        const oomScoreAdj = parseInt(process.env.NPROXY_OOM_SCORE_ADJ || '-500', 10);
         fs.writeFileSync(`/proc/${child.pid}/oom_score_adj`, String(oomScoreAdj));
         process.stderr.write(`[nproxy] child OOM score adjusted to ${oomScoreAdj}\n`);
+        oomScoreSet = true;
       } catch (e) {
-        // /proc may not be available or permission denied
-        // Continue without OOM score adjustment
         process.stderr.write(`[nproxy] warning: could not adjust OOM score: ${e.message}\n`);
+      }
+
+      // cgroup v2 fallback: set memory.high if oom_score_adj failed
+      if (!oomScoreSet && fs.existsSync('/sys/fs/cgroup/cgroup.controllers')) {
+        try {
+          const cgroupPath = fs.readFileSync(`/proc/${child.pid}/cgroup`, 'utf8')
+            .split('\n')
+            .find(l => l.startsWith('0::'))
+            ?.slice(3)?.trim();
+          if (cgroupPath) {
+            const memHighPath = `/sys/fs/cgroup/${cgroupPath}/memory.high`;
+            if (fs.existsSync(memHighPath)) {
+              // Set memory.high to current RSS + 256MB headroom
+              const currentHigh = fs.readFileSync(memHighPath, 'utf8').trim();
+              if (currentHigh === 'max' || currentHigh === '') {
+                // Only set if not already constrained
+                const rssBytes = (parseInt(process.env.NPROXY_EMERGENCY_MB || '1280', 10) + 256) * 1024 * 1024;
+                fs.writeFileSync(memHighPath, String(rssBytes));
+                process.stderr.write(`[nproxy] cgroup v2 memory.high set to ${Math.round(rssBytes / 1024 / 1024)}MB\n`);
+              }
+            }
+          }
+        } catch (e) {
+          process.stderr.write(`[nproxy] warning: cgroup v2 fallback failed: ${e.message}\n`);
+        }
       }
     }
 
@@ -1113,6 +1183,7 @@ Preload mode env vars:
     });
 
     // Memory monitor: track child RSS via /proc/{pid}/status
+    let childMonStatePrev = null;
     const childMon = new MemoryMonitor({
       childPid: child.pid,
       attentionMb: DEFAULT_ATTENTION_MB,
@@ -1121,12 +1192,71 @@ Preload mode env vars:
       emergencyMb: DEFAULT_EMERGENCY_MB,
       onTransition: (state, heapMb) => {
         childMonState = state;
+        // emergency状態から復帰する際のstdin処理
+        if (childMonStatePrev === 'emergency' && 
+            ['monitoring', 'attention', 'pressure'].includes(state) && 
+            child.stdin) {
+          if (child.stdin.isPaused) {
+            child.stdin.resume();
+            process.stderr.write('[nproxy] stdin resumed after emergency state\n');
+          }
+        }
+        childMonStatePrev = state;
         if (process.env.NPROXY_MEMLOG) {
           process.stderr.write(`[nproxy] childRSS=${childMon.rssMb}MB heap=${heapMb}MB state=${state}\n`);
         }
       },
     });
     childMon.start();
+
+    // CPU watchdog: monitor CPU usage using /proc/[pid]/stat (independent of event loop)
+    let childCpuWarningTicks = 0;
+    let childCpuEmergencyTicks = 0;
+    let cpuWatchdogTimer = setInterval(() => {
+      try {
+        // Check child process CPU usage
+        const childCpuUsage = getProcessCpuUsage(child.pid);
+        
+        // Update warning/error tick counters
+        if (childCpuUsage >= CPU_EMERGENCY_THRESHOLD) {
+          childCpuEmergencyTicks++;
+          childCpuWarningTicks = 0; // Reset warning counter when in emergency
+          
+          // Emergency state: 6 consecutive ticks (60 seconds) at 95%+ CPU
+          if (childCpuEmergencyTicks >= CPU_EMERGENCY_DURATION_TICKS) {
+            process.stderr.write(`[nproxy] CPU EMERGENCY: child process ${child.pid} at ${childCpuUsage.toFixed(1)}% for ${childCpuEmergencyTicks * (CPU_WATCHDOG_INTERVAL_MS / 1000)}s — initiating shutdown\n`);
+            
+            // Send SIGTERM to child process, then exit immediately.
+            // Child process is orphaned on exit; OS will handle cleanup.
+            // We do not wait (setTimeout) because the event loop may be blocked.
+            try {
+              process.kill(child.pid, 'SIGTERM');
+              process.stderr.write(`[nproxy] sent SIGTERM to child process ${child.pid}\n`);
+            } catch (err) {
+              process.stderr.write(`[nproxy] warning: failed to send SIGTERM to child ${child.pid}: ${err.message}\n`);
+            }
+            process.exit(1);
+          }
+        } else if (childCpuUsage >= CPU_WARNING_THRESHOLD) {
+          childCpuWarningTicks++;
+          childCpuEmergencyTicks = 0; // Reset emergency counter when in warning range
+          
+          // Warning state: 3 consecutive ticks (30 seconds) at 80%+ CPU
+          if (childCpuWarningTicks >= CPU_WARNING_DURATION_TICKS) {
+            process.stderr.write(`[nproxy] CPU WARNING: child process ${child.pid} at ${childCpuUsage.toFixed(1)}% for ${childCpuWarningTicks * (CPU_WATCHDOG_INTERVAL_MS / 1000)}s\n`);
+          }
+        } else {
+          // Reset counters when CPU usage is normal
+          childCpuWarningTicks = 0;
+          childCpuEmergencyTicks = 0;
+        }
+      } catch (err) {
+        // Ignore errors (process may have exited)
+        childCpuWarningTicks = 0;
+        childCpuEmergencyTicks = 0;
+      }
+    }, CPU_WATCHDOG_INTERVAL_MS);
+    cpuWatchdogTimer.unref(); // Allow process to exit even if timer is active
 
     // Signal relay (pipe mode) — guard for Windows where some signals are undefined
     const signals = ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGUSR1', 'SIGUSR2', 'SIGWINCH'];
