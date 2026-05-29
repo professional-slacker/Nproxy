@@ -881,21 +881,37 @@ function intercept() {
 
   // NearHeapLimitCallback (optional C++ addon — fires BEFORE V8 OOM)
   // Re-entrant: if already in emergency, GC and check recovery before exiting
-  let _nheapFired = false; // debounce: prevent rapid re-entry
+  let _nheapRetries = 0;
   try {
     const nheap = require('./nheap_limit');
     if (nheap.available) {
       nheap.register(() => {
-        if (_nheapFired) return; // already handling — let _tick() manage retries
-        _nheapFired = true;
-        process.stderr.write(`\x1b[31m[nproxy] nheap_limit: NearHeapLimitCallback fired (RSS: ${(process.memoryUsage().rss/1024/1024).toFixed(0)}MB)\x1b[0m\n`);
         if (monitor.state !== 'emergency') {
           monitor.state = 'emergency';
-          // Don't call _onTransition — let _tick() handle retry counting
-          // This prevents emergencyRetries from jumping multiple steps at once
+          monitor._onTransition('emergency', process.memoryUsage().rss / 1024 / 1024);
+        } else {
+          // Already in emergency — GC and check recovery
+          if (typeof global.gc === 'function') {
+            try { global.gc(); } catch (_) {}
+          }
+          const postGc = process.memoryUsage().rss / 1024 / 1024;
+          if (postGc < monitor.emergencyMb) {
+            monitor.state = 'monitoring';
+            monitor._emergencyTicks = 0;
+            _nheapRetries = 0;
+            process.stderr.write(`\x1b[32m[nproxy] nheap_limit: recovered to ${postGc.toFixed(0)}MB\x1b[0m\n`);
+          } else {
+            _nheapRetries++;
+            process.stderr.write(`\x1b[31m[nproxy] nheap_limit: still emergency ${postGc.toFixed(0)}MB (${_nheapRetries}/25)\x1b[0m\n`);
+            if (_nheapRetries > 25) {
+              const mu = process.memoryUsage();
+              process.stderr.write(`\x1b[31;1m[nproxy] nheap_limit: no recovery after ${_nheapRetries} retries — exiting\x1b[0m\n`);
+              process.stderr.write(`\x1b[31m  RSS: ${(mu.rss/1024/1024).toFixed(1)}MB  heap: ${(mu.heapUsed/1024/1024).toFixed(1)}/${(mu.heapTotal/1024/1024).toFixed(1)}MB  ext: ${(mu.external/1024/1024).toFixed(1)}MB  ab: ${(mu.arrayBuffers/1024/1024).toFixed(1)}MB\x1b[0m\n`);
+              writeCrashDump('nheap_limit_no_recovery', 'emergency', _nheapRetries);
+              process.exit(1);
+            }
+          }
         }
-        // Reset debounce after one tick interval
-        setTimeout(() => { _nheapFired = false; }, monitor.tickMs).unref();
       });
     }
   } catch (_) { /* addon not built — tick-only monitoring */ }
