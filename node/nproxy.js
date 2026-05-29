@@ -69,7 +69,8 @@ function debugLog(level, msg) {
 }
 
 // Crash dump — written to cwd on abnormal exit (like a core file)
-function writeCrashDump(reason, state, retries) {
+// writerFn: optional stderr writer (exit handler passes origStderrWrite)
+function writeCrashDump(reason, state, retries, writerFn) {
   try {
     const mu = process.memoryUsage();
     const v8 = require('v8');
@@ -81,7 +82,7 @@ function writeCrashDump(reason, state, retries) {
     const arrayBuffers = (mu.arrayBuffers / 1024 / 1024).toFixed(1);
     const divergence = (mu.rss / 1024 / 1024 - mu.heapTotal / 1024 / 1024).toFixed(0);
     // stderr output
-    const w = process.stderr.write ? (msg) => process.stderr.write(msg) : () => {};
+    const w = writerFn || (process.stderr.write ? (msg) => process.stderr.write(msg) : () => {});
     w(`\x1b[31;1m[nproxy] ${reason} — state: ${state}, retries: ${retries}\x1b[0m\n`);
     w(`\x1b[31m  RSS: ${rss}MB  heap: ${heapUsed}/${heapTotal}MB  external: ${external}MB  arrayBuffers: ${arrayBuffers}MB\x1b[0m\n`);
     w(`\x1b[31m  RSS-heap divergence: ${divergence}MB  heap_limit: ${(hs.heap_size_limit/1024/1024).toFixed(0)}MB\x1b[0m\n`);
@@ -880,7 +881,6 @@ function intercept() {
 
   // NearHeapLimitCallback (optional C++ addon — fires BEFORE V8 OOM)
   // Re-entrant: if already in emergency, GC and check recovery before exiting
-  let _nheapRetries = 0;
   let _nheapFired = false; // debounce: prevent rapid re-entry
   try {
     const nheap = require('./nheap_limit');
@@ -995,7 +995,7 @@ function intercept() {
       } catch (_) { /* stream may be closed */ }
       // Dump file for abnormal exits
       if (code !== 0) {
-        try { writeCrashDump(`exit_${code}`, monitor ? monitor.state : 'unknown', emergencyRetries); } catch (_) {}
+        try { writeCrashDump(`exit_${code}`, monitor ? monitor.state : 'unknown', emergencyRetries, origStderrWrite); } catch (_) {}
       }
     });
     process.on('SIGPIPE', () => {
