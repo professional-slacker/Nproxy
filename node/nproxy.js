@@ -62,6 +62,68 @@ const DEFAULT_EMERGENCY_MB = parseInt(process.env.NPROXY_EMERGENCY_MB || String(
 const DEFAULT_TICK_MS = parseInt(process.env.NPROXY_TICK_MS || '200', 10);
 const DEFAULT_MONITOR = process.env.NPROXY_MONITOR || 'auto'; // auto | rss | split | array
 
+// Debug levels: 1=chunk split, 2=memory summary, 3=divergence warn, 4=state detail, 5=full dump
+const DEBUG_LEVEL = parseInt(process.env.NPROXY_DEBUG || '0', 10);
+function debugLog(level, msg) {
+  if (DEBUG_LEVEL >= level) process.stderr.write(`\x1b[90m[nproxy:dbg${level}] ${msg}\x1b[0m\n`);
+}
+
+// Crash dump — written to cwd on abnormal exit (like a core file)
+// writerFn: optional stderr writer (exit handler passes origStderrWrite)
+function writeCrashDump(reason, state, retries, writerFn) {
+  try {
+    const mu = process.memoryUsage();
+    const v8 = require('v8');
+    const hs = v8.getHeapStatistics();
+    const rss = (mu.rss / 1024 / 1024).toFixed(1);
+    const heapUsed = (mu.heapUsed / 1024 / 1024).toFixed(1);
+    const heapTotal = (mu.heapTotal / 1024 / 1024).toFixed(1);
+    const external = (mu.external / 1024 / 1024).toFixed(1);
+    const arrayBuffers = (mu.arrayBuffers / 1024 / 1024).toFixed(1);
+    const divergence = (mu.rss / 1024 / 1024 - mu.heapTotal / 1024 / 1024).toFixed(0);
+    // stderr output
+    const w = writerFn || (process.stderr.write ? (msg) => process.stderr.write(msg) : () => {});
+    w(`\x1b[31;1m[nproxy] ${reason} — state: ${state}, retries: ${retries}\x1b[0m\n`);
+    w(`\x1b[31m  RSS: ${rss}MB  heap: ${heapUsed}/${heapTotal}MB  external: ${external}MB  arrayBuffers: ${arrayBuffers}MB\x1b[0m\n`);
+    w(`\x1b[31m  RSS-heap divergence: ${divergence}MB  heap_limit: ${(hs.heap_size_limit/1024/1024).toFixed(0)}MB\x1b[0m\n`);
+    if (mu.rss / 1024 / 1024 > 500 && mu.rss / 1024 / 1024 > mu.heapTotal / 1024 / 1024 * 2) {
+      w(`\x1b[33;1m  ⚠ RSS >> heap: possible native memory leak (nheap_limit, node-pty, Buffer)\x1b[0m\n`);
+    }
+    // JSON dump file
+    const dump = {
+      timestamp: new Date().toISOString(),
+      reason, state, retries,
+      memory: {
+        rss_mb: +rss, heapUsed_mb: +heapUsed, heapTotal_mb: +heapTotal,
+        external_mb: +external, arrayBuffers_mb: +arrayBuffers,
+        rss_heap_divergence_mb: +divergence,
+      },
+      v8: {
+        heap_size_limit_mb: +(hs.heap_size_limit / 1024 / 1024).toFixed(0),
+        total_heap_size_mb: +(hs.total_heap_size / 1024 / 1024).toFixed(0),
+        used_heap_size_mb: +(hs.used_heap_size / 1024 / 1024).toFixed(0),
+        total_physical_size_mb: +(hs.total_physical_size / 1024 / 1024).toFixed(0),
+        malloced_memory_mb: +(hs.malloced_memory / 1024 / 1024).toFixed(0),
+        peak_malloced_memory_mb: +(hs.peak_malloced_memory / 1024 / 1024).toFixed(0),
+      },
+      process: {
+        pid: process.pid, uptime_s: Math.round(process.uptime()),
+        node_version: process.version, argv: process.argv.slice(2),
+      },
+    };
+    try {
+      const nhl = require('./nheap_limit');
+      if (nhl.getStats) dump.nheap_limit = nhl.getStats();
+    } catch (_) {}
+    const ts = dump.timestamp.replace(/[:.]/g, '-');
+    const filename = `nproxy_crash_${ts}.json`;
+    require('fs').writeFileSync(filename, JSON.stringify(dump, null, 2));
+    w(`\x1b[33m[nproxy] crash dump: ${filename}\x1b[0m\n`);
+  } catch (e) {
+    try { process.stderr.write(`\x1b[31m[nproxy] crash dump failed: ${e.message}\x1b[0m\n`); } catch (_) {}
+  }
+}
+
 // CPU Watchdog constants
 const CPU_WATCHDOG_INTERVAL_MS = parseInt(process.env.NPROXY_CPU_WATCHDOG_INTERVAL_MS || '10000', 10); // 10秒間隔
 const CPU_WARNING_THRESHOLD = parseFloat(process.env.NPROXY_CPU_WARNING_THRESHOLD || '80'); // 80%以上で警告
@@ -368,8 +430,28 @@ class MemoryMonitor {
     }
 
     if (newState !== this.state) {
+      // Level 4: state transition detail
+      debugLog(4, `state: ${this.state} → ${newState} (RSS: ${heapMb}MB, heapUsed: ${heapUsedMb}MB, effective: ${effectiveMb}MB, delta: ${delta}MB, spike: ${spikeMb.toFixed(0)}MB)`);
       this.state = newState;
       this._onTransition(newState, heapMb);
+    }
+
+    // Level 2: memory summary (every tick)
+    if (DEBUG_LEVEL >= 2 && usage) {
+      const ext = (usage.external / 1024 / 1024).toFixed(0);
+      const ab = (usage.arrayBuffers / 1024 / 1024).toFixed(0);
+      debugLog(2, `RSS:${heapMb}M heap:${heapUsedMb}/${(usage.heapTotal/1024/1024).toFixed(0)}M ext:${ext}M ab:${ab}M state:${this.state} Δ:${delta}M`);
+    }
+    // Level 3: RSS-heap divergence warning
+    if (DEBUG_LEVEL >= 3 && usage && heapMb > 500 && heapMb > (usage.heapTotal / 1024 / 1024) * 2) {
+      debugLog(3, `⚠ RSS>>heap divergence: RSS=${heapMb}M heapTotal=${(usage.heapTotal/1024/1024).toFixed(0)}M (possible native leak)`);
+    }
+    // Level 5: full dump including nheap_limit status
+    if (DEBUG_LEVEL >= 5 && usage) {
+      try {
+        const nhl = require('./nheap_limit');
+        debugLog(5, `nheap_limit: available=${nhl.available}, registered=${typeof nhl.register === 'function'}`);
+      } catch (_) {}
     }
 
     // Emergency sustained check: if state remains emergency across ticks
@@ -377,8 +459,10 @@ class MemoryMonitor {
     if (this.state === 'emergency' && newState === 'emergency') {
       this._emergencyTicks++;
       if (this._emergencyTicks > 25) {
-        const rssNow = (process.memoryUsage().rss / 1024 / 1024).toFixed(1);
-        process.stderr.write(`\x1b[31;1m[nproxy] EMERGENCY: sustained for ${this._emergencyTicks} ticks (RSS: ${rssNow}MB) — exiting\x1b[0m\n`);
+        const mu = process.memoryUsage();
+        process.stderr.write(`\x1b[31;1m[nproxy] EMERGENCY: sustained for ${this._emergencyTicks} ticks — exiting\x1b[0m\n`);
+        process.stderr.write(`\x1b[31m  RSS: ${(mu.rss/1024/1024).toFixed(1)}MB  heap: ${(mu.heapUsed/1024/1024).toFixed(1)}/${(mu.heapTotal/1024/1024).toFixed(1)}MB  ext: ${(mu.external/1024/1024).toFixed(1)}MB  ab: ${(mu.arrayBuffers/1024/1024).toFixed(1)}MB\x1b[0m\n`);
+        writeCrashDump('emergency_sustained', this.state, this._emergencyTicks);
         process.exit(1);
       }
     } else {
@@ -554,8 +638,8 @@ function intercept() {
     for (let i = 0; i < data.length; i += maxChunkBytes) {
       parts.push(data.slice(i, i + maxChunkBytes));
     }
-    if (parts.length > 1 && process.env.NPROXY_DEBUG) {
-      process.stderr.write(`[nproxy] chunk: ${data.length}B → ${parts.length}×${maxChunkBytes}B (state=${monitor.state})\n`);
+    if (parts.length > 1) {
+      debugLog(1, `chunk: ${data.length}B → ${parts.length}×${maxChunkBytes}B (state=${monitor.state})`);
     }
     return parts;
   }
@@ -743,13 +827,16 @@ function intercept() {
             process.stderr.write(`\x1b[32m[nproxy] GC freed ${(heapMb - postGc).toFixed(0)}MB, back to ${postGc.toFixed(0)}MB\x1b[0m\n`);
           }
         }
-        // Emergency retry loop: 5 chances then self-terminate (5×200ms = 1s window)
+        // Emergency retry loop: 25 chances then self-terminate (25×200ms = 5s window)
         // Does NOT kill the child process (principle ②: signals relayed, not generated)
         emergencyRetries++;
         const rssNow = (process.memoryUsage().rss / 1024 / 1024).toFixed(1);
-        process.stderr.write(`\x1b[31m[nproxy] EMERGENCY retry ${emergencyRetries}/5 — RSS: ${rssNow}MB\x1b[0m\n`);
-        if (emergencyRetries > 5) {
-          process.stderr.write(`\x1b[31;1m[nproxy] EMERGENCY: no recovery after 5 retries — exiting\x1b[0m\n`);
+        process.stderr.write(`\x1b[31m[nproxy] EMERGENCY retry ${emergencyRetries}/25 — RSS: ${rssNow}MB\x1b[0m\n`);
+        if (emergencyRetries > 25) {
+          const mu = process.memoryUsage();
+          process.stderr.write(`\x1b[31;1m[nproxy] EMERGENCY: no recovery after ${emergencyRetries} retries — exiting\x1b[0m\n`);
+          process.stderr.write(`\x1b[31m  RSS: ${(mu.rss/1024/1024).toFixed(1)}MB  heap: ${(mu.heapUsed/1024/1024).toFixed(1)}/${(mu.heapTotal/1024/1024).toFixed(1)}MB  ext: ${(mu.external/1024/1024).toFixed(1)}MB  ab: ${(mu.arrayBuffers/1024/1024).toFixed(1)}MB\x1b[0m\n`);
+          writeCrashDump('emergency_no_recovery', state, emergencyRetries);
           process.exit(1);
         }
       } else if (state === 'critical') {
@@ -815,9 +902,12 @@ function intercept() {
             process.stderr.write(`\x1b[32m[nproxy] nheap_limit: recovered to ${postGc.toFixed(0)}MB\x1b[0m\n`);
           } else {
             _nheapRetries++;
-            process.stderr.write(`\x1b[31m[nproxy] nheap_limit: still emergency ${postGc.toFixed(0)}MB (${_nheapRetries}/5)\x1b[0m\n`);
-            if (_nheapRetries > 5) {
-              process.stderr.write(`\x1b[31;1m[nproxy] nheap_limit: no recovery after 5 retries — exiting\x1b[0m\n`);
+            process.stderr.write(`\x1b[31m[nproxy] nheap_limit: still emergency ${postGc.toFixed(0)}MB (${_nheapRetries}/25)\x1b[0m\n`);
+            if (_nheapRetries > 25) {
+              const mu = process.memoryUsage();
+              process.stderr.write(`\x1b[31;1m[nproxy] nheap_limit: no recovery after ${_nheapRetries} retries — exiting\x1b[0m\n`);
+              process.stderr.write(`\x1b[31m  RSS: ${(mu.rss/1024/1024).toFixed(1)}MB  heap: ${(mu.heapUsed/1024/1024).toFixed(1)}/${(mu.heapTotal/1024/1024).toFixed(1)}MB  ext: ${(mu.external/1024/1024).toFixed(1)}MB  ab: ${(mu.arrayBuffers/1024/1024).toFixed(1)}MB\x1b[0m\n`);
+              writeCrashDump('nheap_limit_no_recovery', 'emergency', _nheapRetries);
               process.exit(1);
             }
           }
@@ -888,9 +978,11 @@ function intercept() {
 
     process.on('uncaughtException', (err) => {
       logCrash('uncaughtException', err);
+      try { writeCrashDump('uncaughtException', monitor ? monitor.state : 'unknown', 0); } catch (_) {}
     });
     process.on('unhandledRejection', (reason) => {
       logCrash('unhandledRejection', reason);
+      try { writeCrashDump('unhandledRejection', monitor ? monitor.state : 'unknown', 0); } catch (_) {}
     });
     process.on('exit', (code) => {
       // Flush stderr buffer synchronously — setImmediate won't fire in exit handler
@@ -901,12 +993,26 @@ function intercept() {
         }
       } catch (_) {}
       try {
-        const rss = (process.memoryUsage().rss / 1024 / 1024).toFixed(1);
+        const mu = process.memoryUsage();
+        const rss = (mu.rss / 1024 / 1024).toFixed(1);
+        const heapUsed = (mu.heapUsed / 1024 / 1024).toFixed(1);
+        const heapTotal = (mu.heapTotal / 1024 / 1024).toFixed(1);
+        const external = (mu.external / 1024 / 1024).toFixed(1);
+        const arrayBuffers = (mu.arrayBuffers / 1024 / 1024).toFixed(1);
         const state = monitor ? monitor.state : 'unknown';
-        const heapUsed = (process.memoryUsage().heapUsed / 1024 / 1024).toFixed(1);
-        const heapTotal = (process.memoryUsage().heapTotal / 1024 / 1024).toFixed(1);
-        origStderrWrite(`\x1b[31m[nproxy] process exit with code ${code} (RSS: ${rss}MB, heap: ${heapUsed}/${heapTotal}MB, state: ${state}, retries: ${emergencyRetries})\x1b[0m\n`);
+        const divergence = (mu.rss / 1024 / 1024 - mu.heapTotal / 1024 / 1024).toFixed(0);
+        origStderrWrite(`\x1b[31m[nproxy] process exit with code ${code}\x1b[0m\n`);
+        origStderrWrite(`\x1b[31m  state: ${state}  retries: ${emergencyRetries}\x1b[0m\n`);
+        origStderrWrite(`\x1b[31m  RSS: ${rss}MB  heap: ${heapUsed}/${heapTotal}MB  external: ${external}MB  arrayBuffers: ${arrayBuffers}MB\x1b[0m\n`);
+        origStderrWrite(`\x1b[31m  RSS-heap divergence: ${divergence}MB\x1b[0m\n`);
+        if (mu.rss / 1024 / 1024 > 500 && mu.rss / 1024 / 1024 > mu.heapTotal / 1024 / 1024 * 2) {
+          origStderrWrite(`\x1b[33;1m  ⚠ RSS >> heap: possible native memory leak (nheap_limit, node-pty, Buffer)\x1b[0m\n`);
+        }
       } catch (_) { /* stream may be closed */ }
+      // Dump file for abnormal exits
+      if (code !== 0) {
+        try { writeCrashDump(`exit_${code}`, monitor ? monitor.state : 'unknown', emergencyRetries, origStderrWrite); } catch (_) {}
+      }
     });
     process.on('SIGPIPE', () => {
       try { origStderrWrite(`\x1b[33m[nproxy] SIGPIPE received — pipe closed\x1b[0m\n`); } catch (_) {}
@@ -958,6 +1064,9 @@ Modes:
 
 Preload mode env vars:
   NPROXY_TEXT     text processing mode (default: passthrough)
+  NPROXY_DEBUG    debug verbosity level (1-5)
+                  1: chunk split, 2: memory summary, 3: divergence warn,
+                  4: state transitions, 5: full dump + nheap_limit stats
 `);
     process.exit(1);
   }
