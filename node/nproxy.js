@@ -44,13 +44,20 @@ function traceLog(line) {
 }
 
 initTraceLogger();
-const DFS_ATTENTION_MB = 256;
-const DFS_PRESSURE_MB = 512;
-const DFS_CRITICAL_MB = 1024;
-const DFS_EMERGENCY_MB = 1280;
+
+// ---- Memory guard thresholds (auto-scaled to V8 heap limit) ----
+// Base DFS values calibrated for ~1600MB default heap.
+// Ratios: attention=16%, pressure=32%, critical=64%, emergency=80%.
+const HEAP_LIMIT_MB = (() => {
+  try { return require('v8').getHeapStatistics().heap_size_limit / 1024 / 1024; } catch (_) { return 1600; }
+})();
+const DFS_ATTENTION_MB  = Math.round(HEAP_LIMIT_MB * 0.16);
+const DFS_PRESSURE_MB   = Math.round(HEAP_LIMIT_MB * 0.32);
+const DFS_CRITICAL_MB   = Math.round(HEAP_LIMIT_MB * 0.64);
+const DFS_EMERGENCY_MB  = Math.round(HEAP_LIMIT_MB * 0.80);
 const DEFAULT_ATTENTION_MB = parseInt(process.env.NPROXY_ATTENTION_MB || String(DFS_ATTENTION_MB), 10);
-const DEFAULT_PRESSURE_MB = parseInt(process.env.NPROXY_PRESSURE_MB || String(DFS_PRESSURE_MB), 10);
-const DEFAULT_CRITICAL_MB = parseInt(process.env.NPROXY_CRITICAL_MB || String(DFS_CRITICAL_MB), 10);
+const DEFAULT_PRESSURE_MB  = parseInt(process.env.NPROXY_PRESSURE_MB || String(DFS_PRESSURE_MB), 10);
+const DEFAULT_CRITICAL_MB  = parseInt(process.env.NPROXY_CRITICAL_MB || String(DFS_CRITICAL_MB), 10);
 const DEFAULT_EMERGENCY_MB = parseInt(process.env.NPROXY_EMERGENCY_MB || String(DFS_EMERGENCY_MB), 10);
 const DEFAULT_TICK_MS = parseInt(process.env.NPROXY_TICK_MS || '200', 10);
 const DEFAULT_MONITOR = process.env.NPROXY_MONITOR || 'auto'; // auto | rss | split | array
@@ -512,10 +519,10 @@ function intercept() {
   function injectBanner() {
     if (bannerShown) return '';
     bannerShown = true;
-    const pressure = process.env.NPROXY_PRESSURE_MB || '512';
-    const critical = process.env.NPROXY_CRITICAL_MB || '1024';
-    const attention = process.env.NPROXY_ATTENTION_MB || '256';
-    const emergency = process.env.NPROXY_EMERGENCY_MB || '1280';
+    const pressure = process.env.NPROXY_PRESSURE_MB || String(DEFAULT_PRESSURE_MB);
+    const critical = process.env.NPROXY_CRITICAL_MB || String(DEFAULT_CRITICAL_MB);
+    const attention = process.env.NPROXY_ATTENTION_MB || String(DEFAULT_ATTENTION_MB);
+    const emergency = process.env.NPROXY_EMERGENCY_MB || String(DEFAULT_EMERGENCY_MB);
     const icon = `${BOLD}◈${RESET}${GREEN}`;
     const title = ` nproxy memory guard active`;
     const sub = `attn=${attention}  press=${pressure}  crit=${critical}  emg=${emergency}MB`;
@@ -1084,7 +1091,7 @@ Preload mode env vars:
               const currentHigh = fs.readFileSync(memHighPath, 'utf8').trim();
               if (currentHigh === 'max' || currentHigh === '') {
                 // Only set if not already constrained
-                const rssBytes = (parseInt(process.env.NPROXY_EMERGENCY_MB || '1280', 10) + 256) * 1024 * 1024;
+                const rssBytes = (DEFAULT_EMERGENCY_MB + 256) * 1024 * 1024;
                 fs.writeFileSync(memHighPath, String(rssBytes));
                 process.stderr.write(`[nproxy] cgroup v2 memory.high set to ${Math.round(rssBytes / 1024 / 1024)}MB\n`);
               }

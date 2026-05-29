@@ -41,10 +41,8 @@ fi
 
 cd "$(dirname "$0")" && SCRIPT_DIR="$(pwd -P)"
 NODE_BIN="$(command -v node)"
-# --max-old-space-size / NPROXY_EMERGENCY_MB を自動設定（環境変数で上書き可能）
-# ヒープ上限（デフォルト: Node実行時に動的取得、フォールバック2048MB）
+# --max-old-space-size を自動設定（環境変数で上書き可能）
+# guard閾値のスケールは nproxy.js が V8 ヒープ上限から自動計算
 NODE_OPT_MAX_OLD="${NODE_OPT_MAX_OLD:-$("$NODE_BIN" -e "console.log(require('v8').getHeapStatistics().heap_size_limit / 1024 / 1024 | 0)" 2>/dev/null)}"
 : "${NODE_OPT_MAX_OLD:=2048}"
-# emergency閾値（デフォルト: ヒープ上限の80%、環境変数で任意値に上書き可能）
-export NPROXY_EMERGENCY_MB="${NPROXY_EMERGENCY_MB:-$((NODE_OPT_MAX_OLD * 80 / 100))}"
 exec "$NODE_BIN" --expose-gc "--max-old-space-size=${NODE_OPT_MAX_OLD}" "$SCRIPT_DIR/node/nproxy.js" "--text=$MODE" "${COMMAND_ARGS[@]}"
