@@ -229,6 +229,23 @@ WRAPINNER
   fi
 fi
 
+# ---- nheap_limit native addon check ----
+NHEAP_NODE="$NPROXY_DIR/node/nheap_limit/build/Release/nheap_limit.node"
+if [ -f "$NHEAP_NODE" ]; then
+  NODE_MAJOR=$(node -e "console.log(process.version.match(/^v(\d+)/)[1])" 2>/dev/null || echo "0")
+  echo ""
+  echo "=== nheap_limit native addon ==="
+  echo "  Pre-built binary: $NHEAP_NODE"
+  echo "  Built on Node.js v22.x (N-API + V8 AddNearHeapLimitCallback)"
+  echo "  Compatible: Node.js $NODE_MAJOR.x (同メジャーのみ保証)"
+  if [ "$NODE_MAJOR" != "22" ]; then
+    echo "  ⚠ Node.js v$NODE_MAJOR では手動リビルドが必要な可能性があります"
+    echo "     $ cd $NPROXY_DIR/node/nheap_limit && npx node-gyp rebuild"
+  else
+    echo "  ✅ 互換性あり"
+  fi
+fi
+
 # ---- LD_PRELOAD setup (optional) ----
 echo ""
 echo "=== LD_PRELOAD execve hook (optional) ==="
