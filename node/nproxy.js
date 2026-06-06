@@ -571,20 +571,26 @@ function intercept() {
 
   // Set process title for ps/OOM identification
   // Format: "<app> -via nproxy::<state>"
+  // In CLI mode (require.main === module), runCLI() already set the correct app name.
   const appName = process.argv[1] ? require('path').basename(process.argv[1]) : 'unknown';
   const nproxyTitleBase = `${appName} -via nproxy`;
   let nproxyTitle = `${nproxyTitleBase}::monitoring`;
-  process.title = nproxyTitle;
+  if (require.main !== module) {
+    process.title = nproxyTitle;
+  }
 
   // Delayed stderr "active" indicator (safe for TUI apps)
   // Also re-set process.title here because the host app (e.g. openclaude)
   // may overwrite it during its own initialization.
+  // In CLI mode (require.main === module), this is skipped to avoid TUI layout corruption.
   const dimGreen = '\x1b[32;2m', reset = '\x1b[0m';
-  setTimeout(() => {
-    process.title = nproxyTitle;
-    const rssMb = (process.memoryUsage().rss / 1024 / 1024).toFixed(0);
-    process.stderr.write(`${dimGreen}[nproxy]${reset} active (pid=${process.pid}, rss=${rssMb}MB)\n`);
-  }, 5000).unref();
+  if (require.main !== module) {
+    setTimeout(() => {
+      process.title = nproxyTitle;
+      const rssMb = (process.memoryUsage().rss / 1024 / 1024).toFixed(0);
+      process.stderr.write(`${dimGreen}[nproxy]${reset} active (pid=${process.pid}, rss=${rssMb}MB)\n`);
+    }, 5000).unref();
+  }
 
   let textMode = process.env.NPROXY_TEXT || 'passthrough';
   let processText = createTextProcessor(textMode);
@@ -618,11 +624,15 @@ function intercept() {
       `  ${DIM_GREEN}║ ${sub}${' '.repeat(pad2)}${DIM_GREEN}║${RESET}\n` +
       `  ${DIM_GREEN}╚${'═'.repeat(boxW)}╝${RESET}\n`;
   }
-  // Fallback: if banner anchor is never seen, inject after 1s
-  const bannerTimer = setTimeout(() => {
-    const banner = injectBanner();
-    if (banner) process.stderr.write(banner);
-  }, 100).unref();
+  // Fallback: if banner anchor is never seen, inject after 100ms
+  // In CLI mode (require.main === module), banner is handled by runCLI() — skip here.
+  let bannerTimer = null;
+  if (require.main !== module) {
+    bannerTimer = setTimeout(() => {
+      const banner = injectBanner();
+      if (banner) process.stderr.write(banner);
+    }, 100).unref();
+  }
 
   // Chunk size limit per write (0 = no limit)
   let maxChunkBytes = 0;
@@ -817,7 +827,7 @@ function intercept() {
         maxChunkBytes = MAX_CHUNK_CRITICAL;
         bypassCoalesce = true;
         nproxyTitle = `${nproxyTitleBase}::emergency`;
-        process.title = nproxyTitle;
+        if (require.main !== module) process.title = nproxyTitle;
         process.stderr.write(`\x1b[31;1m[nproxy] EMERGENCY: ${heapMb}MB — forcing recovery\x1b[0m\n`);
         if (typeof global.gc === 'function') {
           try { global.gc(); } catch (_) {}
@@ -843,12 +853,12 @@ function intercept() {
         maxChunkBytes = MAX_CHUNK_CRITICAL;
         bypassCoalesce = true;
         nproxyTitle = `${nproxyTitleBase}::critical`;
-        process.title = nproxyTitle;
+        if (require.main !== module) process.title = nproxyTitle;
         process.stderr.write(`${BLUE}${BOLD}[nproxy]${RESET}${BLUE} memory critical: ${heapMb}MB — throttling I/O${RESET}\n`);
       } else if (state === 'pressure') {
         maxChunkBytes = MAX_CHUNK_PRESSURE;
         nproxyTitle = `${nproxyTitleBase}::pressure`;
-        process.title = nproxyTitle;
+        if (require.main !== module) process.title = nproxyTitle;
         if (textMode === 'passthrough') {
           textMode = 'strip-ansi';
           processText = createTextProcessor(textMode);
@@ -860,13 +870,13 @@ function intercept() {
         // Attention: mild throttling, start chunk splitting
         maxChunkBytes = MAX_CHUNK_ATTENTION;
         nproxyTitle = `${nproxyTitleBase}::attention`;
-        process.title = nproxyTitle;
+        if (require.main !== module) process.title = nproxyTitle;
         process.stderr.write(`${DIM_GREEN}[nproxy]${RESET} memory attention: ${heapMb}MB — monitoring\n`);
       } else {
         maxChunkBytes = MAX_CHUNK_NORMAL;
         bypassCoalesce = false;
         nproxyTitle = `${nproxyTitleBase}::monitoring`;
-        process.title = nproxyTitle;
+        if (require.main !== module) process.title = nproxyTitle;
         if (textMode !== process.env.NPROXY_TEXT && textMode !== 'passthrough') {
           textMode = process.env.NPROXY_TEXT || 'passthrough';
           processText = createTextProcessor(textMode);
@@ -1009,8 +1019,8 @@ function intercept() {
           origStderrWrite(`\x1b[33;1m  ⚠ RSS >> heap: possible native memory leak (nheap_limit, node-pty, Buffer)\x1b[0m\n`);
         }
       } catch (_) { /* stream may be closed */ }
-      // Dump file for abnormal exits
-      if (code !== 0) {
+      // Dump file for abnormal exits (skip signal-based exits like Ctrl+C/SIGINT=130)
+      if (code !== 0 && code !== 130) {
         try { writeCrashDump(`exit_${code}`, monitor ? monitor.state : 'unknown', emergencyRetries, origStderrWrite); } catch (_) {}
       }
     });
@@ -1078,6 +1088,39 @@ Preload mode env vars:
 
   const usePty = cli.pty || process.env.NPROXY_PTY === '1';
 
+  // Set process title to show the proxied app name (overrides intercept() fallback)
+  const proxyAppName = cli.app ? require('path').basename(cli.app) : 'unknown';
+  process.title = `${proxyAppName} -via nproxy::monitoring`;
+
+  // Banner injection (shared by stderr startup + stdout anchor modes)
+  let cliBannerShown = false;
+  function injectCliBanner() {
+    if (cliBannerShown) return '';
+    cliBannerShown = true;
+    const press = process.env.NPROXY_PRESSURE_MB || String(DEFAULT_PRESSURE_MB);
+    const crit = process.env.NPROXY_CRITICAL_MB || String(DEFAULT_CRITICAL_MB);
+    const attn = process.env.NPROXY_ATTENTION_MB || String(DEFAULT_ATTENTION_MB);
+    const emg = process.env.NPROXY_EMERGENCY_MB || String(DEFAULT_EMERGENCY_MB);
+    const dimGreen = '\x1b[32;2m', reset = '\x1b[0m', bold = '\x1b[1m', green = '\x1b[32m';
+    const icon = `${bold}◈${reset}${green}`;
+    const title = ` nproxy memory guard active`;
+    const sub = `attn=${attn}  press=${press}  crit=${crit}  emg=${emg}MB`;
+    const boxW = 56;
+    const pad1 = boxW - 1 - '◈ nproxy memory guard active'.length;
+    const pad2 = boxW - 1 - sub.length;
+    return `  ${dimGreen}╔${'═'.repeat(boxW)}╗${reset}\n` +
+      `  ${dimGreen}║ ${icon}${title}${' '.repeat(pad1)}${dimGreen}║${reset}\n` +
+      `  ${dimGreen}║ ${sub}${' '.repeat(pad2)}${dimGreen}║${reset}\n` +
+      `  ${dimGreen}╚${'═'.repeat(boxW)}╝${reset}\n`;
+  }
+
+  // Show banner on stderr at startup
+  const banner = injectCliBanner();
+  if (banner) process.stderr.write(banner);
+
+  /** Configurable anchor string for stdout injection */
+  const bannerAnchor = process.env.NPROXY_BANNER_ANCHOR || '';
+
   let child;
   if (usePty) {
     // ---- PTY mode: use node-pty for TTY emulation ----
@@ -1116,8 +1159,9 @@ Preload mode env vars:
       } catch (_) {}
       if (process.stdin.isTTY && process.stdin.setRawMode) process.stdin.setRawMode(false);
       if (signal) {
-        if (signal === 'SIGKILL') process.exit(128 + 9);
-        else process.kill(process.pid, signal);
+        // Exit with signal code directly — avoid re-signaling which can hang
+        const sigNum = signal === 'SIGKILL' ? 9 : signal === 'SIGINT' ? 2 : signal === 'SIGTERM' ? 15 : 1;
+        process.exit(128 + sigNum);
       }
       else process.exit(exitCode);
     });
@@ -1214,6 +1258,11 @@ Preload mode env vars:
 
     // Stdin relay: forward parent stdin -> child stdin
     // This ensures nproxy intercepts all IO (not just stdout/stderr)
+    // Enable raw mode for interactive input (character-by-character, not line-buffered)
+    if (process.stdin.isTTY && process.stdin.setRawMode) {
+      process.stdin.setRawMode(true);
+    }
+    process.stdin.resume();
     process.stdin.on('data', (chunk) => {
       const processed = processInput(chunk);
       if (processed.length > 0) {
@@ -1232,8 +1281,21 @@ Preload mode env vars:
     child.stdout.on('readable', () => {
       let chunk;
       while ((chunk = child.stdout.read()) !== null) {
-        const processed = processText(chunk);
+        let processed = processText(chunk);
         if (processed.length === 0) continue;
+        // Banner injection: if anchor is set and not yet shown, search for it in the output
+        if (bannerAnchor && !cliBannerShown && typeof processed === 'string') {
+          const clean = processed.replace(/\x1b\[[\d;]*m/g, '');
+          if (clean.includes(bannerAnchor)) {
+            const banner = injectCliBanner();
+            if (banner) {
+              const lastNewline = processed.lastIndexOf('\n');
+              if (lastNewline !== -1) {
+                processed = processed.slice(0, lastNewline + 1) + banner;
+              }
+            }
+          }
+        }
         // Under memory pressure: apply backpressure
         if (childMonState === 'emergency' || childMonState === 'critical') {
           const ok = process.stdout.write(processed);
@@ -1383,10 +1445,17 @@ Preload mode env vars:
     }
 
     child.on('exit', (code, sig) => {
+      if (process.stdin.isTTY && process.stdin.setRawMode) process.stdin.setRawMode(false);
       if (sig) process.kill(process.pid, sig);
       else process.exit(code);
     });
   } // end pipe mode
+
+  // Show child process info on stderr after spawn
+  if (child && child.pid) {
+    const appName = cli.app ? require('path').basename(cli.app) : 'unknown';
+    process.stderr.write(`  \x1b[32;2m[nproxy]\x1b[0m child pid=${child.pid} app=${appName}\n`);
+  }
 } // end runCLI
 
 // ---- Entry ----
