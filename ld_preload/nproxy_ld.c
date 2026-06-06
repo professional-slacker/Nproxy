@@ -72,24 +72,26 @@ static void init(void) {
     } else {
         /* Auto-detect: look alongside this shared library or in default locations */
         Dl_info info;
+        char *libdir = NULL;
         if (dladdr((void*)init, &info) && info.dli_fname) {
             char *libpath = strdup(info.dli_fname);
-            char *libdir = dirname(libpath);
-            char *tmp = malloc(strlen(libdir) + 32);
-            sprintf(tmp, "%s/../nproxy-run.sh", libdir);
-            if (access(tmp, X_OK) == 0) {
-                nproxy_runner = tmp;
+            libdir = dirname(libpath);
+            /* nproxy-run.sh */
+            char *rp = malloc(strlen(libdir) + 32);
+            sprintf(rp, "%s/../nproxy-run.sh", libdir);
+            if (access(rp, X_OK) == 0) {
+                nproxy_runner = rp;
             } else {
-                char *js_path = malloc(strlen(libdir) + 32);
-                sprintf(js_path, "%s/../node/nproxy.js", libdir);
-                if (access(js_path, R_OK) == 0) {
-                    nproxy_js = js_path;
-                    nproxy_runner = strdup(libdir);
-                } else {
-                    free(js_path);
-                    nproxy_runner = strdup("nproxy-run.sh");
-                }
-                free(tmp);
+                free(rp);
+                nproxy_runner = strdup("nproxy-run.sh");
+            }
+            /* nproxy.js (always try to resolve even if runner exists) */
+            char *jp = malloc(strlen(libdir) + 32);
+            sprintf(jp, "%s/../node/nproxy.js", libdir);
+            if (access(jp, R_OK) == 0) {
+                nproxy_js = jp;
+            } else {
+                free(jp);
             }
             free(libpath);
         } else {
@@ -163,6 +165,14 @@ static int is_node_target(const char *pathname) {
     const char *ext = strrchr(pathname, '.');
     if (ext && (strcmp(ext, ".js") == 0 || strcmp(ext, ".mjs") == 0 || strcmp(ext, ".cjs") == 0))
         return 1;
+    /* Check basename for "node" */
+    char *base = strdup(pathname);
+    char *bname = basename(base);
+    if (strcmp(bname, "node") == 0 || strcmp(bname, "nodejs") == 0) {
+        free(base);
+        return 1;
+    }
+    free(base);
     /* Check shebang for node */
     FILE *f = fopen(pathname, "r");
     if (f) {
