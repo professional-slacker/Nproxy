@@ -4,6 +4,8 @@
 # Usage:
 #   ./nproxy-run.sh [options] <command> [args...]
 #   ./nproxy-run.sh passthrough -- /usr/bin/someapp --flag
+#   ./nproxy-run.sh --pty opencode           # PTY mode for interactive CLIs
+#   ./nproxy-run.sh passthrough --pty -- opencode
 #
 # Without a text-mode argument, defaults to NPROXY_TEXT=passthrough.
 # If the first argument matches a known mode (passthrough|strip-ansi|transform),
@@ -13,10 +15,11 @@
 #   NPROXY_TEXT    text mode override (takes precedence over positional arg)
 
 MODE="passthrough"
+PTY=""
 COMMAND_ARGS=()
 
 if [ "$#" -eq 0 ]; then
-  echo "Usage: $0 [passthrough|strip-ansi|transform] -- <command> [args...]" >&2
+  echo "Usage: $0 [passthrough|strip-ansi|transform] [--pty] -- <command> [args...]" >&2
   exit 1
 fi
 
@@ -26,6 +29,12 @@ case "$1" in
     shift
     ;;
 esac
+
+# Handle --pty flag
+if [ "$1" = "--pty" ]; then
+  PTY="--pty"
+  shift
+fi
 
 # Handle -- separator
 if [ "$1" = "--" ]; then
@@ -45,4 +54,4 @@ NODE_BIN="$(command -v node)"
 # guard閾値のスケールは nproxy.js が V8 ヒープ上限から自動計算
 NODE_OPT_MAX_OLD="${NODE_OPT_MAX_OLD:-$("$NODE_BIN" -e "console.log(require('v8').getHeapStatistics().heap_size_limit / 1024 / 1024 | 0)" 2>/dev/null)}"
 : "${NODE_OPT_MAX_OLD:=2048}"
-exec "$NODE_BIN" --expose-gc "--max-old-space-size=${NODE_OPT_MAX_OLD}" "$SCRIPT_DIR/node/nproxy.js" "--text=$MODE" "${COMMAND_ARGS[@]}"
+exec "$NODE_BIN" --expose-gc "--max-old-space-size=${NODE_OPT_MAX_OLD}" "$SCRIPT_DIR/node/nproxy.js" "--text=$MODE" $PTY "${COMMAND_ARGS[@]}"
