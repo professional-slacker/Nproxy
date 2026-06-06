@@ -16,7 +16,11 @@ nproxy command [args...]                 # Rust CLI mode
 ```bash
 # 1. Hook into an existing Node.js app (NODE_OPTIONS — recommended)
 #    nproxy shares the app's process, monitoring memory in real-time.
-NODE_OPTIONS="--expose-gc -r $HOME/workfolder/Nproxy/node/nproxy.js" \
+#    Include --expose-gc and --max-old-space-size to prevent apps from respawning
+#    (e.g. openclaude spawnSyncs itself when those flags are missing).
+#    Use a dynamic heap limit (e.g. 75% of total RAM) for portability:
+SIZE_MB=$(( $(awk '/MemTotal/{printf "%.0f", $2/1024}' /proc/meminfo) * 3 / 4 ))
+NODE_OPTIONS="--expose-gc --max-old-space-size=$SIZE_MB -r $HOME/workfolder/Nproxy/node/nproxy.js" \
   NPROXY_TEXT=passthrough my-app.js
 
 # 2. Hook with node -r (also works for CJS apps)
@@ -26,8 +30,14 @@ NPROXY_TEXT=passthrough node -r ./node/nproxy.js my-app.js
 #    nproxy runs the tool as a child process and relays I/O.
 ./nproxy-run.sh my-agent
 
-# 4. Aliases for daily use (add to ~/.bash_aliases)
-alias npro='NODE_OPTIONS="--expose-gc -r $HOME/workfolder/Nproxy/node/nproxy.js" NPROXY_TEXT=passthrough'
+# 4. Run the installer for interactive heap configuration
+./install.sh
+
+# 5. Or manually: compute heap limit once per session (add to ~/.bashrc)
+SIZE_MB=$(( $(awk '/MemTotal/{printf "%.0f", $2/1024}' /proc/meminfo) * 3 / 4 ))
+
+# 6. Aliases for daily use (add to ~/.bash_aliases)
+alias npro='NODE_OPTIONS="--expose-gc --max-old-space-size=$SIZE_MB -r $HOME/workfolder/Nproxy/node/nproxy.js" NPROXY_TEXT=passthrough'
 alias myagent='npro my-app'
 
 # Then simply:
@@ -44,6 +54,10 @@ myagent
 
 > **Note:** For ESM main scripts (e.g., apps with `"type": "module"`), use `NODE_OPTIONS` instead of `node -r`.
 > Node.js may skip CJS preload with `node -r` when the main script is ESM.
+>
+> **Heap relaunch bypass:** Some Node.js apps (e.g. openclaude) respawn themselves via `spawnSync`
+> when `--expose-gc` and `--max-old-space-size` are both missing. Include both in `NODE_OPTIONS`
+> to keep a single process. Compute `--max-old-space-size` dynamically (75% of total RAM) for portability.
 
 **Windows support:**
 
@@ -57,7 +71,7 @@ For the preload mode, the `-r` flag tells Node to load nproxy **before** your ap
 so nproxy can hook into `process.stdout.write` and set up memory monitoring from the beginning.
 
 > **Alias tip:** Use `$HOME` instead of `~` in alias definitions — `~` may not expand
-> inside single quotes. Example: `alias npro='NPROXY_TEXT=passthrough node -r $HOME/workfolder/Nproxy/node/nproxy.js'`
+> inside single quotes. Example: `alias npro='NPROXY_TEXT=passthrough NODE_OPTIONS="--expose-gc --max-old-space-size=$SIZE_MB -r $HOME/workfolder/Nproxy/node/nproxy.js"'`
 
 ---
 
@@ -114,12 +128,26 @@ If the child blocks on write, nproxy is simply "waiting for reads to resume."
 
 ## Implementations
 
-### Node — preload mode (`-r`)
+### Node — preload mode (`-r`) / `NODE_OPTIONS`
+
+#### ESM apps (recommended)
+
+```bash
+# Use NODE_OPTIONS so the preload applies in the main process.
+# Include --max-old-space-size and --expose-gc to prevent apps
+# (e.g. openclaude) from respawning themselves when those flags are missing.
+SIZE_MB=$(( $(awk '/MemTotal/{printf "%.0f", $2/1024}' /proc/meminfo) * 3 / 4 ))
+NODE_OPTIONS="--expose-gc --max-old-space-size=$SIZE_MB -r $HOME/workfolder/Nproxy/node/nproxy.js" \
+  my-esm-app.js
+```
+
+#### CJS apps (alternative)
 
 ```bash
 node -r ./node/nproxy.js my-app.js
+```
 
-# Environment variables
+#### Environment variables
 NPROXY_TEXT=passthrough|transform|strip-ansi   # text processing mode (default: passthrough)
   #   passthrough  — pass through unmodified. Recommended for interactive CLIs (Ink, React).
   #   transform    — prepend timestamp to each line. For batch logging / file output only.
@@ -204,6 +232,7 @@ cargo run --release -- --text=strip-ansi -- command [args...]
 
 ```
 .
+├── install.sh      Heap configuration installer
 ├── node/           Node.js preload mode implementation
 │   └── nproxy.js
 ├── rs/             Rust CLI relay implementation (PRE-ALPHA — not usable yet)
