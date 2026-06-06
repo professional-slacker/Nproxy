@@ -237,12 +237,12 @@ if [ -f "$NHEAP_NODE" ]; then
   echo "=== nheap_limit native addon ==="
   echo "  Pre-built binary: $NHEAP_NODE"
   echo "  Built on Node.js v22.x (N-API + V8 AddNearHeapLimitCallback)"
-  echo "  Compatible: Node.js $NODE_MAJOR.x (同メジャーのみ保証)"
+  echo "  Compatible: same major version only"
   if [ "$NODE_MAJOR" != "22" ]; then
-    echo "  ⚠ Node.js v$NODE_MAJOR では手動リビルドが必要な可能性があります"
-    echo "     $ cd $NPROXY_DIR/node/nheap_limit && npx node-gyp rebuild"
+    echo "  ⚠ Node.js v$NODE_MAJOR detected — pre-built binary may be incompatible"
+    echo "     Rebuild: cd $NPROXY_DIR/node/nheap_limit && npx node-gyp rebuild"
   else
-    echo "  ✅ 互換性あり"
+    echo "  ✅ Binary compatible with current Node.js"
   fi
 fi
 
