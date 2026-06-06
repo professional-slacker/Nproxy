@@ -8,6 +8,21 @@ WRAPPER_INFO="$HOME/.nproxy_wrapper"
 echo "=== nproxy uninstall ==="
 echo ""
 
+# ---- Helper: read with YES=1 env var support ----
+# Usage: prompt VAR DEFAULT PROMPT_TEXT
+# Sets VAR to DEFAULT if YES=1, otherwise prompts.
+prompt() {
+  local var="$1" default="$2" text="$3"
+  if [ -n "$YES" ]; then
+    eval "$var=\"$default\""
+  else
+    local val
+    read -p "$text" val
+    val=${val:-$default}
+    eval "$var=\"$val\""
+  fi
+}
+
 # ---- Restore wrapped binaries ----
 if [ -f "$WRAPPER_INFO" ]; then
   source "$WRAPPER_INFO"
@@ -37,7 +52,7 @@ if [ -f "$WRAPPER_INFO" ]; then
     echo "  Checking for binary..."
     if [ -f "$WRAP_BIN" ] && head -1 "$WRAP_BIN" | grep -q "nproxy wrapper"; then
       echo "  Wrapper found at $WRAP_BIN but no backup."
-      read -p "  Remove wrapper (binary will be lost)? [y/N]: " REMOVE
+      prompt REMOVE "n" "  Remove wrapper (binary will be lost)? [y/N]: "
       if [[ "$REMOVE" =~ ^[Yy] ]]; then
         rm -f "$WRAP_BIN"
         echo "  Removed."
@@ -53,8 +68,7 @@ else
     if [ -f "$F" ] && head -1 "$F" 2>/dev/null | grep -q "nproxy wrapper"; then
       BACKUP="${F%/*}/${F##*/}.real"
       if [ -f "$BACKUP" ]; then
-        read -p "Restore ${F##*/}? [Y/n]: " RESTORE
-        RESTORE=${RESTORE:-y}
+        prompt RESTORE "y" "Restore ${F##*/}? [Y/n]: "
         if [[ "$RESTORE" =~ ^[Yy] ]]; then
           rm -f "$F"
           mv "$BACKUP" "$F"
@@ -62,7 +76,7 @@ else
         fi
       else
         echo "  Found wrapper $F but no backup ($BACKUP)."
-        read -p "  Remove wrapper only? [y/N]: " RM
+        prompt RM "n" "  Remove wrapper only? [y/N]: "
         if [[ "$RM" =~ ^[Yy] ]]; then
           rm -f "$F"
           echo "  Removed."
@@ -78,8 +92,7 @@ NPROXY_ENV="$HOME/.nproxy.sh"
 if [ -f "$NPROXY_ENV" ]; then
   if grep -q "nproxy_ld" "$NPROXY_ENV" 2>/dev/null; then
     echo "  LD_PRELOAD references found in $NPROXY_ENV"
-    read -p "  Remove LD_PRELOAD config from .nproxy.sh? [Y/n]: " RM_LD
-    RM_LD=${RM_LD:-y}
+    prompt RM_LD "y" "  Remove LD_PRELOAD config from .nproxy.sh? [Y/n]: "
     if [[ "$RM_LD" =~ ^[Yy] ]]; then
       # Remove lines between "# LD_PRELOAD execve hook" and next blank line or end
       sed -i '/^# LD_PRELOAD execve hook/,/^$/d' "$NPROXY_ENV"

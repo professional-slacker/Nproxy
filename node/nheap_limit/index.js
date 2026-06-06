@@ -11,10 +11,18 @@
  */
 
 let mod = null;
-try {
-  mod = require(require('path').join(__dirname, 'build', 'Release', 'nheap_limit.node'));
-} catch (e) {
-  // not built — nproxy falls back to tick-only monitoring
+
+// Bun (JavaScriptCore) doesn't support V8 native addons (AddNearHeapLimitCallback).
+// Attempting to dlopen nheap_limit.node on Bun crashes the process at the linker level
+// — even try-catch cannot recover. Guard against it explicitly.
+if (process.versions && process.versions.bun) {
+  // V8-only addon; Bun falls back to tick-only monitoring
+} else {
+  try {
+    mod = require(require('path').join(__dirname, 'build', 'Release', 'nheap_limit.node'));
+  } catch (e) {
+    // not built — nproxy falls back to tick-only monitoring
+  }
 }
 
 /**

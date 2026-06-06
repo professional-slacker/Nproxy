@@ -60,10 +60,14 @@ ENVEOF
 
 if [ "$HEAP_MB" = "dynamic" ]; then
   cat >> "$NPROXY_ENV" << ENVEOF
-NPROXY_NODE_OPTIONS="--expose-gc --max-old-space-size=\$(( \$(awk '/MemTotal/{printf "%.0f", \$2/1024}' /proc/meminfo) * 3 / 4 )) -r $NPROXY_JS"
+NPROXY_HEAP_MB=\$(( \$(awk '/MemTotal/{printf "%.0f", \$2/1024}' /proc/meminfo) * 3 / 4 ))
+NPROXY_NODE_OPTIONS="--expose-gc --max-old-space-size=\$NPROXY_HEAP_MB -r $NPROXY_JS"
 ENVEOF
 else
-  echo "NPROXY_NODE_OPTIONS=\"--expose-gc --max-old-space-size=$HEAP_MB -r $NPROXY_JS\"" >> "$NPROXY_ENV"
+  cat >> "$NPROXY_ENV" << ENVEOF
+NPROXY_HEAP_MB=$HEAP_MB
+NPROXY_NODE_OPTIONS="--expose-gc --max-old-space-size=$HEAP_MB -r $NPROXY_JS"
+ENVEOF
 fi
 
 chmod 644 "$NPROXY_ENV"
@@ -273,13 +277,14 @@ fi
 
 # ---- Remote sync (optional) ----
 echo ""
-read -p "Sync to remote machine (192.168.3.14)? [y/N]: " SYNC
-if [[ "$SYNC" =~ ^[Yy] ]]; then
-  ssh mmixx@192.168.3.14 "mkdir -p \"$NPROXY_DIR/ld_preload\"" 2>/dev/null || true
-  scp -r "$NPROXY_DIR/ld_preload" "mmixx@192.168.3.14:$NPROXY_DIR/ld_preload" 2>/dev/null
-  scp "$NPROXY_ENV" "mmixx@192.168.3.14:$NPROXY_ENV" 2>/dev/null
-  scp "$BASH_ALIASES" "mmixx@192.168.3.14:$BASH_ALIASES" 2>/dev/null
-  [ -f "$HOME/.nproxy_wrapper" ] && scp "$HOME/.nproxy_wrapper" "mmixx@192.168.3.14:$HOME/.nproxy_wrapper" 2>/dev/null
+read -p "Sync to remote machine via SSH? (user@host, empty=skip): " SSH_TARGET
+if [ -n "$SSH_TARGET" ]; then
+  echo "Syncing to $SSH_TARGET..."
+  ssh "$SSH_TARGET" "mkdir -p \"$NPROXY_DIR/ld_preload\"" 2>/dev/null || true
+  scp -r "$NPROXY_DIR/ld_preload" "$SSH_TARGET:$NPROXY_DIR/ld_preload" 2>/dev/null
+  scp "$NPROXY_ENV" "$SSH_TARGET:$NPROXY_ENV" 2>/dev/null
+  scp "$BASH_ALIASES" "$SSH_TARGET:$BASH_ALIASES" 2>/dev/null
+  [ -f "$HOME/.nproxy_wrapper" ] && scp "$HOME/.nproxy_wrapper" "$SSH_TARGET:$HOME/.nproxy_wrapper" 2>/dev/null
   echo "Synced."
 fi
 

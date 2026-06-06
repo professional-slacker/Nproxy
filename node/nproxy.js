@@ -90,6 +90,7 @@ class StdinFlowController {
     this._origRemoveListener = null;
     this._patched = false;
     this._ended = false;
+    this._inputHandlerCount = 0;
   }
 
   start() {
@@ -112,6 +113,9 @@ class StdinFlowController {
       this._handleEnd();
     });
     origOn.call(this.realStdin, 'error', (err) => this._handleError(err));
+    // Unref stdin so it doesn't keep the event loop alive in preload mode.
+    // It will be reffed when the host app registers a data/readable handler.
+    if (typeof this.realStdin.unref === 'function') this.realStdin.unref();
     this._pollState();
   }
 
@@ -132,6 +136,10 @@ class StdinFlowController {
     this.realStdin.on = function (event, handler) {
       if (patchedEvents.has(event)) {
         ctrl.appHandlers[event].push(handler);
+        if (event === 'data' || event === 'readable') {
+          ctrl._inputHandlerCount++;
+          if (ctrl._inputHandlerCount === 1 && typeof ctrl.realStdin.ref === 'function') ctrl.realStdin.ref();
+        }
         if (DEBUG_LEVEL >= 5) process.stderr.write(`[nproxy:dbg5] stdin.on('${event}') — appHandlers.${event}.length=${ctrl.appHandlers[event].length}\n`);
         if (event === 'data') ctrl._flushPending();
         return this;
@@ -146,6 +154,10 @@ class StdinFlowController {
     this.realStdin.prependListener = function (event, handler) {
       if (patchedEvents.has(event)) {
         ctrl.appHandlers[event].unshift(handler);
+        if (event === 'data' || event === 'readable') {
+          ctrl._inputHandlerCount++;
+          if (ctrl._inputHandlerCount === 1 && typeof ctrl.realStdin.ref === 'function') ctrl.realStdin.ref();
+        }
         if (event === 'data') ctrl._flushPending();
         return this;
       }
@@ -156,11 +168,19 @@ class StdinFlowController {
     this.realStdin.once = function (event, handler) {
       if (patchedEvents.has(event)) {
         const wrapped = (...args) => {
+          if (event === 'data' || event === 'readable') {
+            ctrl._inputHandlerCount--;
+            if (ctrl._inputHandlerCount <= 0 && typeof ctrl.realStdin.unref === 'function') ctrl.realStdin.unref();
+          }
           handler(...args);
           const idx = ctrl.appHandlers[event].indexOf(wrapped);
           if (idx >= 0) ctrl.appHandlers[event].splice(idx, 1);
         };
         ctrl.appHandlers[event].push(wrapped);
+        if (event === 'data' || event === 'readable') {
+          ctrl._inputHandlerCount++;
+          if (ctrl._inputHandlerCount === 1 && typeof ctrl.realStdin.ref === 'function') ctrl.realStdin.ref();
+        }
         if (event === 'data') ctrl._flushPending();
         return this;
       }
@@ -172,7 +192,13 @@ class StdinFlowController {
     this.realStdin.removeListener = function (event, handler) {
       if (patchedEvents.has(event)) {
         const idx = ctrl.appHandlers[event].indexOf(handler);
-        if (idx >= 0) ctrl.appHandlers[event].splice(idx, 1);
+        if (idx >= 0) {
+          ctrl.appHandlers[event].splice(idx, 1);
+          if (event === 'data' || event === 'readable') {
+            ctrl._inputHandlerCount--;
+            if (ctrl._inputHandlerCount <= 0 && typeof ctrl.realStdin.unref === 'function') ctrl.realStdin.unref();
+          }
+        }
         return this;
       }
       return ctrl._origRemoveListener(event, handler);

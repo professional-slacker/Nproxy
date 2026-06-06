@@ -43,6 +43,9 @@ static char *node_bin = NULL;
 /* nproxy.js path */
 static char *nproxy_js = NULL;
 
+/* environ for execvp */
+extern char **environ;
+
 static void init(void) {
     if (initialized) return;
     initialized = 1;
@@ -186,6 +189,37 @@ static int is_node_target(const char *pathname) {
     return 0;
 }
 
+static int get_heap_mb(void) {
+    const char *val = getenv("NPROXY_HEAP_MB");
+    if (val && val[0]) {
+        int n = atoi(val);
+        if (n > 0) return n;
+    }
+    return 8192;
+}
+
+static char *resolve_path(const char *file) {
+    if (!file) return NULL;
+    if (file[0] == '/') return strdup(file);
+    const char *path_env = getenv("PATH");
+    if (!path_env) return NULL;
+    char *path_copy = strdup(path_env);
+    char *save;
+    char *dir = strtok_r(path_copy, ":", &save);
+    while (dir) {
+        char *full = malloc(strlen(dir) + strlen(file) + 2);
+        sprintf(full, "%s/%s", dir, file);
+        if (access(full, X_OK) == 0) {
+            free(path_copy);
+            return full;
+        }
+        free(full);
+        dir = strtok_r(NULL, ":", &save);
+    }
+    free(path_copy);
+    return NULL;
+}
+
 /*
  * Inject NODE_OPTIONS for Node.js targets.
  * For non-Node targets, redirect to nproxy-run.sh --pty.
@@ -213,15 +247,16 @@ static int handle_execve(const char *pathname, char *const argv[], char *const e
         }
 
         /* Build NODE_OPTIONS with nproxy.js */
+        int heap_mb = get_heap_mb();
         char node_opts[4096];
         if (nproxy_js) {
             snprintf(node_opts, sizeof(node_opts),
                 "NODE_OPTIONS=--expose-gc --max-old-space-size=%d -r %s",
-                8192, nproxy_js);
+                heap_mb, nproxy_js);
         } else {
             snprintf(node_opts, sizeof(node_opts),
                 "NODE_OPTIONS=--expose-gc --max-old-space-size=%d",
-                8192);
+                heap_mb);
         }
         new_envp[j++] = strdup(node_opts);
         new_envp[j++] = "NPROXY_LD_ACTIVE=1";
@@ -285,9 +320,12 @@ int execvp(const char *file, char *const argv[]) {
     if (!real_execvp) real_execvp = dlsym(RTLD_NEXT, "execvp");
     init();
     if (!getenv("NPROXY_LD_ACTIVE") && should_wrap(file)) {
-        /* execvp searches PATH, so we need to resolve first */
-        /* For simplicity, just pass through for now */
-        if (verbose) fprintf(stderr, "[nproxy_ld] execvp(%s) — pass through\n", file ?: "?");
+        char *resolved = resolve_path(file);
+        if (resolved) {
+            int ret = handle_execve(resolved, argv, environ);
+            free(resolved);
+            if (ret != 0) return ret;
+        }
     }
     return real_execvp(file, argv);
 }
@@ -296,7 +334,12 @@ int execvpe(const char *file, char *const argv[], char *const envp[]) {
     if (!real_execvpe) real_execvpe = dlsym(RTLD_NEXT, "execvpe");
     init();
     if (!getenv("NPROXY_LD_ACTIVE") && should_wrap(file)) {
-        if (verbose) fprintf(stderr, "[nproxy_ld] execvpe(%s) — pass through\n", file ?: "?");
+        char *resolved = resolve_path(file);
+        if (resolved) {
+            int ret = handle_execve(resolved, argv, envp);
+            free(resolved);
+            if (ret != 0) return ret;
+        }
     }
     return real_execvpe(file, argv, envp);
 }
