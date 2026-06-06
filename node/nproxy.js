@@ -117,10 +117,11 @@ class StdinFlowController {
 
   _flushPending() {
     if (DEBUG_LEVEL >= 5) process.stderr.write(`[nproxy:dbg5] _flushPending: buffer=${this._pendingBuffer.length}, handlers=${this.appHandlers.data.length}\n`);
-    if (this._pendingEnd && this.appHandlers.data.length > 0) this._handleEnd();
+    // Flush data chunks BEFORE end — otherwise app gets 'end' before all data
     for (const chunk of this._pendingBuffer.splice(0)) {
       this._handleData(chunk);
     }
+    if (this._pendingEnd && this.appHandlers.data.length > 0) this._handleEnd();
   }
 
   _patchMethods() {
@@ -167,6 +168,7 @@ class StdinFlowController {
     };
 
     this._origRemoveListener = this.realStdin.removeListener.bind(this.realStdin);
+    this._origOff = this.realStdin.off.bind(this.realStdin);
     this.realStdin.removeListener = function (event, handler) {
       if (patchedEvents.has(event)) {
         const idx = ctrl.appHandlers[event].indexOf(handler);
@@ -185,7 +187,7 @@ class StdinFlowController {
     this.realStdin.prependListener = this._origPrependListener;
     this.realStdin.once = this._origOnce;
     this.realStdin.removeListener = this._origRemoveListener;
-    this.realStdin.off = this._origRemoveListener;
+    this.realStdin.off = this._origOff;
     this._patched = false;
   }
 
