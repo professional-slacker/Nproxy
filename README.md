@@ -138,10 +138,10 @@ NODE_OPT_MAX_OLD=4096                          # override heap limit for spawn m
 
 - `process.stdout.write` hook + memory monitoring with auto mode degradation
 - **256KB chunk splitting** — any write exceeding 256KB is split into `MAX_CHUNK_NORMAL` pieces
-- **5-stage memory guard**: monitoring → attention(256MB) → pressure(512MB) → critical(1024MB) → emergency(ヒープ上限の80%, デフォルト動的計算)
-  - emergency閾値は環境変数 `NPROXY_EMERGENCY_MB` で上書き可能
-  - `nproxy-run.sh` 使用時は起動時にNodeヒープ上限を動的取得し、その80%を自動設定
-  - 例: ヒープ上限2240MB → emergency 1792MB
+- **5-stage memory guard**: monitoring → attention(16%) → pressure(32%) → critical(64%) → emergency(80%)
+  - All thresholds auto-scale from V8 heap limit (`v8.getHeapStatistics().heap_size_limit`)
+  - Override any threshold via environment variable: `NPROXY_ATTENTION_MB`, `NPROXY_PRESSURE_MB`, `NPROXY_CRITICAL_MB`, `NPROXY_EMERGENCY_MB`
+  - Example: 8192MB heap → attn=1311, press=2621, crit=5243, emg=6554
   - pressure: auto-switch to strip-ansi, reduces chunk size to 64KB
   - critical: chunk size reduced to 4KB, near-emergency
   - emergency: bypass coalescing, write immediately
@@ -279,8 +279,8 @@ For commercial licensing inquiries (proprietary use, OEM integration, custom dev
 ---
 
 > Internal design documents under `doc/` are written in Japanese — they are development notes, not part of the public interface.
+
 **Minimum $20+ due to wallet fees.**
-```
 
 **nproxy は GPL 3.0 のフリーソフトウェアです。  
 役に立ったと思ったら、任意の暗号通貨支援をお願いします 🙏**
