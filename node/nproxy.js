@@ -244,7 +244,7 @@ class StdinFlowController {
     try {
       const fs = require('fs'), path = require('path'), os = require('os');
       this.tempFile = path.join(os.tmpdir(), `nproxy_stdin_${process.pid}_${Date.now()}.tmp`);
-      this.tempFd = fs.openSync(this.tempFile, 'w');
+      this.tempFd = fs.openSync(this.tempFile, 'w+'); // rw — _startReplay needs read
       this.fileMode = true;
       this.bytesWritten = 0;
       this.bytesReplayed = 0;
