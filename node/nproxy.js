@@ -1723,4 +1723,19 @@ if (require.main === module) {
 // NPROXY_AUTO=1 is set by CLI mode spawn to prevent recursive intercept.
 intercept();
 
-module.exports = { intercept, MemoryMonitor, createTextProcessor, installMonitorTier };
+module.exports = {
+  intercept, MemoryMonitor, createTextProcessor, installMonitorTier,
+  // Exported for unit testing
+  parseArgs,
+  createInputProcessor,
+  writeCrashDump,
+  getProcessCpuUsage,
+  splitChunk: (data, maxBytes) => {
+    if (!maxBytes || data.length <= maxBytes) return [data];
+    const parts = [];
+    for (let i = 0; i < data.length; i += maxBytes) {
+      parts.push(data.slice(i, i + maxBytes));
+    }
+    return parts;
+  },
+};
