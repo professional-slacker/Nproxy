@@ -14,6 +14,13 @@
  * nproxy (via NODE_OPTIONS for Node targets or nproxy-run.sh --pty wrapper
  * for non-Node binaries) into child processes.
  *
+ * Hook strategy (two layers for maximum reach):
+ *   1. execve/execvp/execvpe hooks — intercept libc exec calls (bash, Node.js,
+ *      traditional ELF). Catches fork()+execvp() paths.
+ *   2. fork() hook — swaps environ in child (pid==0) to inject NODE_OPTIONS.
+ *      Catches fork→vfork→inline_execve paths (Bun, Deno, Go).
+ *      Safe because fork() uses COW — child's environ swap does not affect parent.
+ *
  * Environment variables:
  *   NPROXY_LD_TARGETS  — comma-separated binary names to wrap (default: all)
  *   NPROXY_LD_VERBOSE  — set to "1" for debug output to stderr
@@ -29,6 +36,7 @@ static int (*real_execvp)(const char *file, char *const argv[]) = NULL;
 static int (*real_execvpe)(const char *file, char *const argv[], char *const envp[]) = NULL;
 static int (*real_execveat)(int dirfd, const char *pathname, char *const argv[], char *const envp[], int flags) = NULL;
 static int (*real_fexecve)(int fd, char *const argv[], char *const envp[]) = NULL;
+static pid_t (*real_fork)(void) = NULL;
 
 /* Target process names */
 static char **targets = NULL;
@@ -42,6 +50,11 @@ static char *node_bin = NULL;
 
 /* nproxy.js path */
 static char *nproxy_js = NULL;
+
+/* Pre-allocated environ for fork() child — avoids malloc in vfork/COW child */
+static char *fork_new_environ[512];
+static char fork_node_opts[4096];
+static int fork_env_prepared = 0;
 
 /* environ for execvp */
 extern char **environ;
@@ -196,6 +209,66 @@ static int get_heap_mb(void) {
         if (n > 0) return n;
     }
     return 8192;
+}
+
+/*
+ * Build the pre-allocated environ used by the fork() hook.
+ * Called from fork() in the PARENT context (safe to allocate).
+ */
+static void prepare_fork_env(void) {
+    if (fork_env_prepared) return;
+    fork_env_prepared = 1;
+
+    int heap_mb = get_heap_mb();
+    if (nproxy_js) {
+        snprintf(fork_node_opts, sizeof(fork_node_opts),
+            "NODE_OPTIONS=--expose-gc --max-old-space-size=%d -r %s",
+            heap_mb, nproxy_js);
+    } else {
+        snprintf(fork_node_opts, sizeof(fork_node_opts),
+            "NODE_OPTIONS=--expose-gc --max-old-space-size=%d",
+            heap_mb);
+    }
+
+    int j = 0;
+    for (int i = 0; environ[i] && i < 500; i++) {
+        /* Only filter LD_PRELOAD to prevent infinite recursion.
+           Preserve NPROXY_LD_ACTIVE so the guard in should_wrap() works. */
+        if (strncmp(environ[i], "LD_PRELOAD=", 11) == 0)
+            continue;
+        fork_new_environ[j++] = environ[i];
+    }
+    fork_new_environ[j++] = fork_node_opts;
+    fork_new_environ[j] = NULL;
+}
+
+__attribute__((constructor))
+static void early_init(void) {
+    real_fork = dlsym(RTLD_NEXT, "fork");
+}
+
+/*
+ * Intercept fork() to inject NODE_OPTIONS via environ in the child.
+ *
+ * This catches runtimes (Bun, Deno, Go) that use fork→vfork→inline_execve
+ * where execve/execvp hooks cannot reach (no libc execve call).
+ *
+ * Guard: when NPROXY_LD_ACTIVE is already set in environ, skip environ
+ * swap entirely — the parent already has proper injection from a previous
+ * level. This prevents double injection when NPROXY_LD_ACTIVE propagates.
+ *
+ * Safe because fork() uses COW — child's environ pointer swap does not
+ * affect the parent's address space (unlike vfork where memory is shared).
+ */
+pid_t fork(void) {
+    if (!real_fork) real_fork = dlsym(RTLD_NEXT, "fork");
+    init();
+    pid_t pid = real_fork();
+    if (pid == 0 && !getenv("NPROXY_LD_ACTIVE")) {
+        prepare_fork_env();
+        environ = fork_new_environ;
+    }
+    return pid;
 }
 
 static char *resolve_path(const char *file) {

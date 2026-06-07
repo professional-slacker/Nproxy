@@ -1,0 +1,28 @@
+{
+  "timestamp": "2026-06-06T20:49:16.557Z",
+  "reason": "no_writer",
+  "state": "monitoring",
+  "retries": 0,
+  "memory": {
+    "rss_mb": 48.2,
+    "heapUsed_mb": 5.1,
+    "heapTotal_mb": 7,
+    "external_mb": 2,
+    "arrayBuffers_mb": 0,
+    "rss_heap_divergence_mb": 41
+  },
+  "v8": {
+    "heap_size_limit_mb": 2096,
+    "total_heap_size_mb": 7,
+    "used_heap_size_mb": 5,
+    "total_physical_size_mb": 7,
+    "malloced_memory_mb": 0,
+    "peak_malloced_memory_mb": 0
+  },
+  "process": {
+    "pid": 1316991,
+    "uptime_s": 0,
+    "node_version": "v22.22.2",
+    "argv": []
+  }
+}
