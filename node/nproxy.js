@@ -69,6 +69,9 @@ function debugLog(level, msg) {
 }
 
 // Crash dump — written to cwd on abnormal exit (like a core file)
+// Track if child process exited abnormally (CLI mode) to avoid duplicate crash dumps
+let _childExitedAbnormally = false;
+
 // writerFn: optional stderr writer (exit handler passes origStderrWrite)
 // err: optional error object to include message/stack in dump
 function writeCrashDump(reason, state, retries, writerFn, err, childInfo) {
