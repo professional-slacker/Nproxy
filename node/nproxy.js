@@ -1738,6 +1738,7 @@ Preload mode env vars:
   if (child && child.pid) {
     const appName = cli.app ? require('path').basename(cli.app) : 'unknown';
     process.stderr.write(`  \x1b[32;2m[nproxy]\x1b[0m child pid=${child.pid} app=${appName}\n`);
+    process.title = `${proxyAppName}(${child.pid}) -via nproxy`;
   }
 } // end runCLI
 
