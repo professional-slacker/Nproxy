@@ -68,6 +68,9 @@ function debugLog(level, msg) {
   if (DEBUG_LEVEL >= level) process.stderr.write(`\x1b[90m[nproxy:dbg${level}] ${msg}\x1b[0m\n`);
 }
 
+// Track if child process exited abnormally (CLI mode) to avoid duplicate crash dumps
+let _childExitedAbnormally = false;
+
 // Stdin Flow Controller — manages input rate based on memory state
 // Instead of replacing process.stdin (getter-only), monkey-patches on/addListener/once/read.
 // Intercepts stdin data flow and controls rate based on monitor.state.
@@ -325,7 +328,28 @@ class StdinFlowController {
 
 // Crash dump — written to cwd on abnormal exit (like a core file)
 // writerFn: optional stderr writer (exit handler passes origStderrWrite)
-function writeCrashDump(reason, state, retries, writerFn) {
+// err: optional error object to include message/stack in dump
+function writeCrashDump(reason, state, retries, writerFn, err) {
+  // Rate limiting to prevent infinite crash dump loops
+  const isEmergency = state === 'emergency';
+  const rateLimitKey = `${reason}:${(err?.message || String(err || '')).slice(0, 100)}`;
+  const now = Date.now();
+  const tracker = _crashDumpTracker.get(rateLimitKey) || { count: 0, firstTime: now, lastTime: 0 };
+  const limit = isEmergency ? RATE_LIMIT.emergency : RATE_LIMIT.normal;
+
+  if (now - tracker.firstTime > limit.windowMs) {
+    tracker.count = 0;
+    tracker.firstTime = now;
+  }
+  if (tracker.count >= limit.maxCount) {
+    const w = writerFn || (process.stderr.write ? (msg) => process.stderr.write(msg) : () => {});
+    w(`\x1b[33m[nproxy] crash dump rate limited (${rateLimitKey}): ${tracker.count}/${limit.maxCount} in ${limit.windowMs}ms\x1b[0m\n`);
+    return;
+  }
+  tracker.count++;
+  tracker.lastTime = now;
+  _crashDumpTracker.set(rateLimitKey, tracker);
+
   try {
     const mu = process.memoryUsage();
     const v8 = require('v8');
@@ -366,18 +390,34 @@ function writeCrashDump(reason, state, retries, writerFn) {
         node_version: process.version, argv: process.argv.slice(2),
       },
     };
+    if (err) {
+      dump.error = {
+        message: err instanceof Error ? err.message : String(err),
+        stack: err instanceof Error ? err.stack : undefined,
+      };
+    }
     try {
       const nhl = require('./nheap_limit');
       if (nhl.getStats) dump.nheap_limit = nhl.getStats();
     } catch (_) {}
     const ts = dump.timestamp.replace(/[:.]/g, '-');
-    const filename = `nproxy_crash_${ts}.json`;
+    const prefix = isEmergency ? 'nproxy_emergency_' : 'nproxy_crash_';
+    _crashDumpCounter++;
+    const filename = `${prefix}${ts}-${_crashDumpCounter}.json`;
     require('fs').writeFileSync(filename, JSON.stringify(dump, null, 2));
     w(`\x1b[33m[nproxy] crash dump: ${filename}\x1b[0m\n`);
   } catch (e) {
     try { process.stderr.write(`\x1b[31m[nproxy] crash dump failed: ${e.message}\x1b[0m\n`); } catch (_) {}
   }
 }
+
+// Rate limiting state for crash dumps
+const _crashDumpTracker = new Map();
+let _crashDumpCounter = 0;
+const RATE_LIMIT = {
+  normal: { windowMs: 3600000, maxCount: 10 },   // 1 hour / 10 dumps
+  emergency: { windowMs: 300000, maxCount: 3 },  // 5 min / 3 dumps
+};
 
 // CPU Watchdog constants
 const CPU_WATCHDOG_INTERVAL_MS = parseInt(process.env.NPROXY_CPU_WATCHDOG_INTERVAL_MS || '10000', 10); // 10秒間隔
@@ -1257,11 +1297,13 @@ function intercept() {
 
     process.on('uncaughtException', (err) => {
       logCrash('uncaughtException', err);
-      try { writeCrashDump('uncaughtException', monitor ? monitor.state : 'unknown', 0); } catch (_) {}
+      try { writeCrashDump('uncaughtException', monitor ? monitor.state : 'unknown', 0, null, err); } catch (_) {}
+      process.exit(1);
     });
     process.on('unhandledRejection', (reason) => {
       logCrash('unhandledRejection', reason);
-      try { writeCrashDump('unhandledRejection', monitor ? monitor.state : 'unknown', 0); } catch (_) {}
+      try { writeCrashDump('unhandledRejection', monitor ? monitor.state : 'unknown', 0, null, reason); } catch (_) {}
+      process.exit(1);
     });
     process.on('exit', (code) => {
       // Cleanup stdin flow controller
@@ -1299,7 +1341,8 @@ function intercept() {
         } catch (_) {}
       }
       // Dump file for abnormal exits (skip signal-based exits like Ctrl+C/SIGINT=130)
-      if (code !== 0 && code !== 130) {
+      // Also skip if child process caused the abnormal exit (child already wrote its own dump)
+      if (code !== 0 && code !== 130 && !_childExitedAbnormally) {
         try { writeCrashDump(`exit_${code}`, monitor ? monitor.state : 'unknown', emergencyRetries, origStderrWrite); } catch (_) {}
       }
     });
@@ -1338,6 +1381,7 @@ function intercept() {
 
 // ---- CLI Mode (spawn child) ----
 function runCLI() {
+  _childExitedAbnormally = false;
   const cli = parseArgs(process.argv.slice(2));
   if (cli.help || !cli.app) {
     const myself = process.argv[1];
@@ -1729,6 +1773,12 @@ Preload mode env vars:
 
     child.on('exit', (code, sig) => {
       if (process.stdin.isTTY && process.stdin.setRawMode) process.stdin.setRawMode(false);
+      const exitInfo = sig ? `signal ${sig}` : `code ${code}`;
+      if (code !== 0 || sig) {
+        _childExitedAbnormally = true;
+        process.stderr.write(`\x1b[31;1m[nproxy] child process ${child.pid} exited abnormally: ${exitInfo}\x1b[0m\n`);
+        process.stderr.write(`\x1b[33m[nproxy] check child crash dump: nproxy_crash_*.json / nproxy_emergency_*.json in ${process.cwd()}\x1b[0m\n`);
+      }
       if (sig) process.kill(process.pid, sig);
       else process.exit(code);
     });
@@ -1756,6 +1806,8 @@ module.exports = {
   createInputProcessor,
   writeCrashDump,
   getProcessCpuUsage,
+  _crashDumpTracker,
+  RATE_LIMIT,
   splitChunk: (data, maxBytes) => {
     if (!maxBytes || data.length <= maxBytes) return [data];
     const parts = [];
