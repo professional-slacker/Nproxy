@@ -1295,15 +1295,12 @@ function intercept() {
       try { origStderrWrite(report + '\n'); } catch (_) {}
     };
 
-    let _fatalExit = false;
     process.on('uncaughtException', (err) => {
-      _fatalExit = true;
       logCrash('uncaughtException', err);
       try { writeCrashDump('uncaughtException', monitor ? monitor.state : 'unknown', 0, null, err); } catch (_) {}
       process.exit(1);
     });
     process.on('unhandledRejection', (reason) => {
-      _fatalExit = true;
       logCrash('unhandledRejection', reason);
       try { writeCrashDump('unhandledRejection', monitor ? monitor.state : 'unknown', 0, null, reason); } catch (_) {}
       process.exit(1);
@@ -1345,8 +1342,7 @@ function intercept() {
       }
       // Dump file for abnormal exits (skip signal-based exits like Ctrl+C/SIGINT=130)
       // Also skip if child process caused the abnormal exit (child already wrote its own dump)
-      // Also skip if uncaughtException/unhandledRejection already dumped
-      if (code !== 0 && code !== 130 && !_childExitedAbnormally && !_fatalExit) {
+      if (code !== 0 && code !== 130 && !_childExitedAbnormally) {
         try { writeCrashDump(`exit_${code}`, monitor ? monitor.state : 'unknown', emergencyRetries, origStderrWrite); } catch (_) {}
       }
     });
