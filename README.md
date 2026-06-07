@@ -148,20 +148,20 @@ node -r ./node/nproxy.js my-app.js
 ```
 
 #### Environment variables
-NPROXY_TEXT=passthrough|transform|strip-ansi   # text processing mode (default: passthrough)
-  #   passthrough  — pass through unmodified. Recommended for interactive CLIs (Ink, React).
-  #   transform    — prepend timestamp to each line. For batch logging / file output only.
-  #                  NOT recommended for interactive CLIs — timestamps break layout rendering.
-  #   strip-ansi   — strip escape sequences. For log storage, grep-friendly output.
-NPROXY_MONITOR=auto|rss|split|array         # memory monitoring tier (default: auto)
-  #   auto    — starts at rss, auto-upgrades to split (attention+) then array (critical+)
-  #   rss     — lightweight: process.memoryUsage().rss only
-  #   split   — rss + heapUsed dual monitoring + SlicedString detach (V8 issue2869)
-  #   array   — rss + split features + Array proxy for push/unshift/splice
-NPROXY_DEBUG=1                                 # enable chunk split / debug logs (default: off)
-NPROXY_MEMLOG=60                               # periodic memory log in seconds (0=OFF)
-NPROXY_EMERGENCY_MB=1800                       # override emergency threshold (default: heap_limit×80%)
-NODE_OPT_MAX_OLD=4096                          # override heap limit for spawn mode (default: auto-detected)
+
+- `NPROXY_TEXT` — text processing mode (default: `passthrough`)
+  - `passthrough` — pass through unmodified. Recommended for interactive CLIs (Ink, React).
+  - `transform` — prepend timestamp to each line. For batch logging / file output only. NOT recommended for interactive CLIs — timestamps break layout rendering.
+  - `strip-ansi` — strip escape sequences. For log storage, grep-friendly output.
+- `NPROXY_MONITOR` — memory monitoring tier (default: `auto`)
+  - `auto` — starts at rss, auto-upgrades to split (attention+) then array (critical+)
+  - `rss` — lightweight: `process.memoryUsage().rss` only
+  - `split` — rss + heapUsed dual monitoring + SlicedString detach (V8 issue2869)
+  - `array` — rss + split features + Array proxy for push/unshift/splice
+- `NPROXY_DEBUG` — enable chunk split / debug logs (default: off)
+- `NPROXY_MEMLOG` — periodic memory log in seconds (default: 0=OFF)
+- `NPROXY_EMERGENCY_MB` — override emergency threshold (default: 80% of heap limit)
+- `NODE_OPT_MAX_OLD` — override heap limit for spawn mode (default: auto-detected)
 ```
 
 - `process.stdout.write` hook + memory monitoring with auto mode degradation
