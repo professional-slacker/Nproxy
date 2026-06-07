@@ -169,7 +169,7 @@ NODE_OPT_MAX_OLD=4096                          # override heap limit for spawn m
 - **5-stage memory guard**: monitoring → attention(256MB) → pressure(512MB) → critical(1024MB) → emergency (80% of heap limit, auto-calculated)
   - Emergency threshold overridable via `NPROXY_EMERGENCY_MB` env var
   - When using `nproxy-run.sh`, heap limit is auto-detected at startup and 80% is used as emergency threshold
-  - 例: ヒープ上限2240MB → emergency 1792MB
+  - Example: heap limit 2240MB → emergency 1792MB
   - pressure: auto-switch to strip-ansi, reduces chunk size to 64KB
   - critical: chunk size reduced to 4KB, near-emergency
   - emergency: bypass coalescing, write immediately
