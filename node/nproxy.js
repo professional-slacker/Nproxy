@@ -68,264 +68,6 @@ function debugLog(level, msg) {
   if (DEBUG_LEVEL >= level) process.stderr.write(`\x1b[90m[nproxy:dbg${level}] ${msg}\x1b[0m\n`);
 }
 
-// Track if child process exited abnormally (CLI mode) to avoid duplicate crash dumps
-let _childExitedAbnormally = false;
-
-// Stdin Flow Controller — manages input rate based on memory state
-// Instead of replacing process.stdin (getter-only), monkey-patches on/addListener/once/read.
-// Intercepts stdin data flow and controls rate based on monitor.state.
-class StdinFlowController {
-  constructor(monitor) {
-    this.monitor = monitor;
-    this.realStdin = process.stdin;
-    this.appHandlers = { data: [], end: [], error: [], readable: [] };
-    this.tempFile = null;
-    this.tempFd = null;
-    this.fileMode = false;
-    this.replayTimer = null;
-    this.replayRate = 65536; // 64KB/s replay rate
-    this.bytesWritten = 0;
-    this.bytesReplayed = 0;
-    this._origOn = null;
-    this._origAddListener = null;
-    this._origPrependListener = null;
-    this._origOnce = null;
-    this._origRemoveListener = null;
-    this._patched = false;
-    this._ended = false;
-    this._inputHandlerCount = 0;
-  }
-
-  start() {
-    if (!this.realStdin) return;
-    // Save original on BEFORE patching — internal handlers must use origOn
-    const origOn = this.realStdin.on.bind(this.realStdin);
-    this._patchMethods();
-    this._patched = true;
-    this._pendingBuffer = [];
-    this._pendingEnd = false;
-    // Internal handlers use origOn (real EventEmitter) — NOT the patched version
-    if (DEBUG_LEVEL >= 5) process.stderr.write(`[nproxy:dbg5] stdin raw: readable=${this.realStdin.readable}, isTTY=${!!this.realStdin.isTTY}\n`);
-    origOn.call(this.realStdin, 'data', (chunk) => {
-      this._pendingBuffer.push(chunk);
-      if (this.appHandlers.data.length > 0) this._flushPending();
-    });
-    origOn.call(this.realStdin, 'end', () => {
-      this._pendingEnd = true;
-      if (this.appHandlers.data.length > 0) this._flushPending();
-      this._handleEnd();
-    });
-    origOn.call(this.realStdin, 'error', (err) => this._handleError(err));
-    // Unref stdin so it doesn't keep the event loop alive in preload mode.
-    // It will be reffed when the host app registers a data/readable handler.
-    if (typeof this.realStdin.unref === 'function') this.realStdin.unref();
-    this._pollState();
-  }
-
-  _flushPending() {
-    if (DEBUG_LEVEL >= 5) process.stderr.write(`[nproxy:dbg5] _flushPending: buffer=${this._pendingBuffer.length}, handlers=${this.appHandlers.data.length}\n`);
-    // Flush data chunks BEFORE end — otherwise app gets 'end' before all data
-    for (const chunk of this._pendingBuffer.splice(0)) {
-      this._handleData(chunk);
-    }
-    if (this._pendingEnd && this.appHandlers.data.length > 0) this._handleEnd();
-  }
-
-  _patchMethods() {
-    const ctrl = this;
-    const patchedEvents = new Set(['data', 'end', 'error', 'readable']);
-
-    this._origOn = this.realStdin.on.bind(this.realStdin);
-    this.realStdin.on = function (event, handler) {
-      if (patchedEvents.has(event)) {
-        ctrl.appHandlers[event].push(handler);
-        if (event === 'data' || event === 'readable') {
-          ctrl._inputHandlerCount++;
-          if (ctrl._inputHandlerCount === 1 && typeof ctrl.realStdin.ref === 'function') ctrl.realStdin.ref();
-        }
-        if (DEBUG_LEVEL >= 5) process.stderr.write(`[nproxy:dbg5] stdin.on('${event}') — appHandlers.${event}.length=${ctrl.appHandlers[event].length}\n`);
-        if (event === 'data') ctrl._flushPending();
-        return this;
-      }
-      return ctrl._origOn(event, handler);
-    };
-
-    this._origAddListener = this.realStdin.addListener.bind(this.realStdin);
-    this.realStdin.addListener = this.realStdin.on;
-
-    this._origPrependListener = this.realStdin.prependListener.bind(this.realStdin);
-    this.realStdin.prependListener = function (event, handler) {
-      if (patchedEvents.has(event)) {
-        ctrl.appHandlers[event].unshift(handler);
-        if (event === 'data' || event === 'readable') {
-          ctrl._inputHandlerCount++;
-          if (ctrl._inputHandlerCount === 1 && typeof ctrl.realStdin.ref === 'function') ctrl.realStdin.ref();
-        }
-        if (event === 'data') ctrl._flushPending();
-        return this;
-      }
-      return ctrl._origPrependListener(event, handler);
-    };
-
-    this._origOnce = this.realStdin.once.bind(this.realStdin);
-    this.realStdin.once = function (event, handler) {
-      if (patchedEvents.has(event)) {
-        const wrapped = (...args) => {
-          if (event === 'data' || event === 'readable') {
-            ctrl._inputHandlerCount--;
-            if (ctrl._inputHandlerCount <= 0 && typeof ctrl.realStdin.unref === 'function') ctrl.realStdin.unref();
-          }
-          handler(...args);
-          const idx = ctrl.appHandlers[event].indexOf(wrapped);
-          if (idx >= 0) ctrl.appHandlers[event].splice(idx, 1);
-        };
-        ctrl.appHandlers[event].push(wrapped);
-        if (event === 'data' || event === 'readable') {
-          ctrl._inputHandlerCount++;
-          if (ctrl._inputHandlerCount === 1 && typeof ctrl.realStdin.ref === 'function') ctrl.realStdin.ref();
-        }
-        if (event === 'data') ctrl._flushPending();
-        return this;
-      }
-      return ctrl._origOnce(event, handler);
-    };
-
-    this._origRemoveListener = this.realStdin.removeListener.bind(this.realStdin);
-    this._origOff = this.realStdin.off.bind(this.realStdin);
-    this.realStdin.removeListener = function (event, handler) {
-      if (patchedEvents.has(event)) {
-        const idx = ctrl.appHandlers[event].indexOf(handler);
-        if (idx >= 0) {
-          ctrl.appHandlers[event].splice(idx, 1);
-          if (event === 'data' || event === 'readable') {
-            ctrl._inputHandlerCount--;
-            if (ctrl._inputHandlerCount <= 0 && typeof ctrl.realStdin.unref === 'function') ctrl.realStdin.unref();
-          }
-        }
-        return this;
-      }
-      return ctrl._origRemoveListener(event, handler);
-    };
-    this.realStdin.off = this.realStdin.removeListener;
-  }
-
-  _unpatchMethods() {
-    if (!this._patched) return;
-    this.realStdin.on = this._origOn;
-    this.realStdin.addListener = this._origAddListener;
-    this.realStdin.prependListener = this._origPrependListener;
-    this.realStdin.once = this._origOnce;
-    this.realStdin.removeListener = this._origRemoveListener;
-    this.realStdin.off = this._origOff;
-    this._patched = false;
-  }
-
-  _pollState() {
-    const state = this.monitor.state;
-    if (state === 'critical' || state === 'emergency') {
-      if (!this.fileMode) this._enterFileMode(state);
-    } else if (this.fileMode && (state === 'monitoring' || state === 'attention')) {
-      this._exitFileMode();
-    }
-    setTimeout(() => this._pollState(), 100).unref();
-  }
-
-  _handleData(chunk) {
-    if (this.fileMode && this.tempFd) {
-      const fs = require('fs');
-      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      fs.writeSync(this.tempFd, buf);
-      this.bytesWritten += buf.length;
-      return;
-    }
-    // Normal/attention/pressure: forward to app handlers, possibly split
-    this._forwardToApp('data', chunk);
-  }
-
-  _handleError(err) {
-    this._forwardToApp('error', err);
-  }
-
-  _handleEnd() {
-    this._ended = true;
-    if (this.fileMode) {
-      const waitReplay = () => {
-        if (this.bytesReplayed >= this.bytesWritten) {
-          this._forwardToApp('end');
-          this._exitFileMode();
-        } else {
-          setTimeout(waitReplay, 100).unref();
-        }
-      };
-      waitReplay();
-    } else {
-      this._forwardToApp('end');
-    }
-  }
-
-  _forwardToApp(event, ...args) {
-    for (const handler of (this.appHandlers[event] || []).slice()) {
-      try { handler(...args); } catch (_) {}
-    }
-  }
-
-  _enterFileMode(state) {
-    try {
-      const fs = require('fs'), path = require('path'), os = require('os');
-      this.tempFile = path.join(os.tmpdir(), `nproxy_stdin_${process.pid}_${Date.now()}.tmp`);
-      this.tempFd = fs.openSync(this.tempFile, 'w+'); // rw — _startReplay needs read
-      this.fileMode = true;
-      this.bytesWritten = 0;
-      this.bytesReplayed = 0;
-      this._startReplay();
-      process.stderr.write(`[nproxy] stdin burst (${state}) → ${this.tempFile}\n`);
-    } catch (e) {
-      process.stderr.write(`[nproxy] stdin file offload failed: ${e.message}\n`);
-      this.fileMode = false;
-    }
-  }
-
-  _exitFileMode() {
-    if (this.replayTimer) { clearTimeout(this.replayTimer); this.replayTimer = null; }
-    if (this.tempFd) { try { require('fs').closeSync(this.tempFd); } catch (_) {} this.tempFd = null; }
-    if (this.tempFile) { try { require('fs').unlinkSync(this.tempFile); } catch (_) {} this.tempFile = null; }
-    this.fileMode = false;
-    process.stderr.write('[nproxy] stdin flow recovered\n');
-  }
-
-  _startReplay() {
-    if (!this.fileMode || !this.tempFd) return;
-    const fs = require('fs');
-    try {
-      const stats = fs.fstatSync(this.tempFd);
-      const remaining = stats.size - this.bytesReplayed;
-      if (remaining <= 0) {
-        if (this._ended) { this._forwardToApp('end'); this._exitFileMode(); }
-        return;
-      }
-      const chunkSize = Math.min(this.replayRate, remaining);
-      const buf = Buffer.alloc(chunkSize);
-      const bytesRead = fs.readSync(this.tempFd, buf, 0, chunkSize, this.bytesReplayed);
-      if (bytesRead > 0) {
-        this.bytesReplayed += bytesRead;
-        this._forwardToApp('data', buf.slice(0, bytesRead));
-        this.replayTimer = setTimeout(() => this._startReplay(), Math.max(1, (chunkSize / this.replayRate) * 1000)).unref();
-      } else {
-        this.replayTimer = setTimeout(() => this._startReplay(), 10).unref();
-      }
-    } catch (_) {
-      this.replayTimer = setTimeout(() => this._startReplay(), 50).unref();
-    }
-  }
-
-  stop() {
-    if (this.replayTimer) { clearTimeout(this.replayTimer); this.replayTimer = null; }
-    if (this.tempFd) { try { require('fs').closeSync(this.tempFd); } catch (_) {} this.tempFd = null; }
-    if (this.tempFile) { try { require('fs').unlinkSync(this.tempFile); } catch (_) {} this.tempFile = null; }
-    this._unpatchMethods();
-  }
-}
-
 // Crash dump — written to cwd on abnormal exit (like a core file)
 // writerFn: optional stderr writer (exit handler passes origStderrWrite)
 // err: optional error object to include message/stack in dump
@@ -1146,9 +888,6 @@ function intercept() {
           const mu = process.memoryUsage();
           process.stderr.write(`\x1b[31;1m[nproxy] EMERGENCY: no recovery after ${emergencyRetries} retries — exiting\x1b[0m\n`);
           process.stderr.write(`\x1b[31m  RSS: ${(mu.rss/1024/1024).toFixed(1)}MB  heap: ${(mu.heapUsed/1024/1024).toFixed(1)}/${(mu.heapTotal/1024/1024).toFixed(1)}MB  ext: ${(mu.external/1024/1024).toFixed(1)}MB  ab: ${(mu.arrayBuffers/1024/1024).toFixed(1)}MB\x1b[0m\n`);
-          if (stdinController && stdinController.tempFile) {
-            process.stderr.write(`\x1b[33m[nproxy] stdin offload file: ${stdinController.tempFile} (${stdinController.bytesWritten}B written, ${stdinController.bytesReplayed}B replayed)\x1b[0m\n`);
-          }
           writeCrashDump('emergency_no_recovery', state, emergencyRetries);
           process.exit(1);
         }
@@ -1192,14 +931,6 @@ function intercept() {
   maxChunkBytes = MAX_CHUNK_NORMAL; // set initial chunk size
   installMonitorTier(monitor);
 
-  // Stdin flow controller (preload mode only - in CLI mode, runCLI handles stdin relay)
-  let stdinController = null;
-  if (require.main !== module && process.stdin && process.stdin.readable) {
-    stdinController = new StdinFlowController(monitor);
-    stdinController.start();
-    process.stderr.write(`${DIM_GREEN}[nproxy]${RESET} stdin flow control active\n`);
-  }
-
   // NearHeapLimitCallback (optional C++ addon — fires BEFORE V8 OOM)
   // Re-entrant: if already in emergency, GC and check recovery before exiting
   let _nheapRetries = 0;
@@ -1228,9 +959,6 @@ function intercept() {
               const mu = process.memoryUsage();
               process.stderr.write(`\x1b[31;1m[nproxy] nheap_limit: no recovery after ${_nheapRetries} retries — exiting\x1b[0m\n`);
               process.stderr.write(`\x1b[31m  RSS: ${(mu.rss/1024/1024).toFixed(1)}MB  heap: ${(mu.heapUsed/1024/1024).toFixed(1)}/${(mu.heapTotal/1024/1024).toFixed(1)}MB  ext: ${(mu.external/1024/1024).toFixed(1)}MB  ab: ${(mu.arrayBuffers/1024/1024).toFixed(1)}MB\x1b[0m\n`);
-              if (stdinController && stdinController.tempFile) {
-                process.stderr.write(`\x1b[33m[nproxy] stdin offload file: ${stdinController.tempFile} (${stdinController.bytesWritten}B written)\x1b[0m\n`);
-              }
               writeCrashDump('nheap_limit_no_recovery', 'emergency', _nheapRetries);
               process.exit(1);
             }
@@ -1311,10 +1039,6 @@ function intercept() {
       process.exit(1);
     });
     process.on('exit', (code) => {
-      // Cleanup stdin flow controller
-      if (stdinController) {
-        try { stdinController.stop(); } catch (_) {}
-      }
       // Flush stderr buffer synchronously — setImmediate won't fire in exit handler
       try {
         while (stderrBuffer.length > 0) {
@@ -1339,12 +1063,6 @@ function intercept() {
           origStderrWrite(`\x1b[33;1m  ⚠ RSS >> heap: possible native memory leak (nheap_limit, node-pty, Buffer)\x1b[0m\n`);
         }
       } catch (_) { /* stream may be closed */ }
-      // Report stdin offload file if active
-      if (stdinController && stdinController.tempFile) {
-        try {
-          origStderrWrite(`\x1b[33m[nproxy] stdin offload file: ${stdinController.tempFile} (${stdinController.bytesWritten}B written, ${stdinController.bytesReplayed}B replayed)\x1b[0m\n`);
-        } catch (_) {}
-      }
       // Dump file for abnormal exits (skip signal-based exits like Ctrl+C/SIGINT=130)
       // Also skip if child process caused the abnormal exit (child already wrote its own dump)
       if (code !== 0 && code !== 130 && !_childExitedAbnormally) {
@@ -1358,10 +1076,6 @@ function intercept() {
       try { origStderrWrite(`\x1b[33m[nproxy] SIGHUP received — terminal disconnected\x1b[0m\n`); } catch (_) {}
     });
     process.on('beforeExit', (code) => {
-      // Cleanup stdin flow controller
-      if (stdinController) {
-        try { stdinController.stop(); } catch (_) {}
-      }
       // Flush stderr buffer synchronously before event loop drains
       try {
         while (stderrBuffer.length > 0) {
