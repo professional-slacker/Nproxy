@@ -1258,10 +1258,12 @@ function intercept() {
     process.on('uncaughtException', (err) => {
       logCrash('uncaughtException', err);
       try { writeCrashDump('uncaughtException', monitor ? monitor.state : 'unknown', 0); } catch (_) {}
+      process.exit(1);
     });
     process.on('unhandledRejection', (reason) => {
       logCrash('unhandledRejection', reason);
       try { writeCrashDump('unhandledRejection', monitor ? monitor.state : 'unknown', 0); } catch (_) {}
+      process.exit(1);
     });
     process.on('exit', (code) => {
       // Cleanup stdin flow controller
