@@ -98,7 +98,7 @@ if [ -f "$NPROXY_ENV" ]; then
       sed -i '/^# LD_PRELOAD execve hook/,/^$/d' "$NPROXY_ENV"
       sed -i '/^export NPROXY_LD_/d' "$NPROXY_ENV"
       sed -i '/^export LD_PRELOAD.*nproxy_ld/d' "$NPROXY_ENV"
-      echo "  Cleaned."
+      echo "  Removed LD_PRELOAD references."
     fi
   else
     echo "  No LD_PRELOAD references in $NPROXY_ENV"

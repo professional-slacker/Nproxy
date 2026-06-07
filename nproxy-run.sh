@@ -4,8 +4,8 @@
 # Usage:
 #   ./nproxy-run.sh [options] <command> [args...]
 #   ./nproxy-run.sh passthrough -- /usr/bin/someapp --flag
-#   ./nproxy-run.sh --pty opencode           # PTY mode for interactive CLIs
-#   ./nproxy-run.sh passthrough --pty -- opencode
+#   ./nproxy-run.sh --pty myapp              # PTY mode for interactive CLIs
+#   ./nproxy-run.sh passthrough --pty -- myapp
 #
 # Without a text-mode argument, defaults to NPROXY_TEXT=passthrough.
 # If the first argument matches a known mode (passthrough|strip-ansi|transform),
@@ -50,8 +50,10 @@ fi
 
 cd "$(dirname "$0")" && SCRIPT_DIR="$(pwd -P)"
 NODE_BIN="$(command -v node)"
-# --max-old-space-size を自動設定（環境変数で上書き可能）
-# guard閾値のスケールは nproxy.js が V8 ヒープ上限から自動計算
-NODE_OPT_MAX_OLD="${NODE_OPT_MAX_OLD:-$("$NODE_BIN" -e "console.log(require('v8').getHeapStatistics().heap_size_limit / 1024 / 1024 | 0)" 2>/dev/null)}"
+# Auto-set max-old-space-size to 75% of total RAM (overridable via NODE_OPT_MAX_OLD env var)
+NODE_OPT_MAX_OLD="${NODE_OPT_MAX_OLD:-$("$NODE_BIN" -e "console.log(Math.floor(require('os').totalmem() / 1024 / 1024 * 0.75))" 2>/dev/null)}"
 : "${NODE_OPT_MAX_OLD:=2048}"
+# Ensure node-pty can be resolved from global modules
+NPM_GLOBAL_ROOT="$("$NODE_BIN" -e "console.log(require('module').GlobalPaths || require('path').resolve(process.execPath, '../lib/node_modules'))" 2>/dev/null || echo /usr/local/lib/node_modules)"
+export NODE_PATH="${NODE_PATH:-$NPM_GLOBAL_ROOT}"
 exec "$NODE_BIN" --expose-gc "--max-old-space-size=${NODE_OPT_MAX_OLD}" "$SCRIPT_DIR/node/nproxy.js" "--text=$MODE" $PTY "${COMMAND_ARGS[@]}"
