@@ -1,0 +1,33 @@
+{
+  "timestamp": "2026-06-07T20:46:36.860Z",
+  "reason": "exit_143",
+  "state": "monitoring",
+  "retries": 0,
+  "memory": {
+    "rss_mb": 223.8,
+    "heapUsed_mb": 97,
+    "heapTotal_mb": 101.7,
+    "external_mb": 3.7,
+    "arrayBuffers_mb": 0.1,
+    "rss_heap_divergence_mb": 122
+  },
+  "v8": {
+    "heap_size_limit_mb": 2096,
+    "total_heap_size_mb": 102,
+    "used_heap_size_mb": 97,
+    "total_physical_size_mb": 101,
+    "malloced_memory_mb": 1,
+    "peak_malloced_memory_mb": 60
+  },
+  "process": {
+    "pid": 1511124,
+    "uptime_s": 23,
+    "node_version": "v22.22.2",
+    "argv": [
+      "--provider",
+      "deepseek",
+      "--model",
+      "deepseek-chat"
+    ]
+  }
+}
