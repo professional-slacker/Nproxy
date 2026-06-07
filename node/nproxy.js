@@ -325,7 +325,7 @@ class StdinFlowController {
 
 // Crash dump — written to cwd on abnormal exit (like a core file)
 // writerFn: optional stderr writer (exit handler passes origStderrWrite)
-function writeCrashDump(reason, state, retries, writerFn, childInfo) {
+function writeCrashDump(reason, state, retries, writerFn) {
   try {
     const mu = process.memoryUsage();
     const v8 = require('v8');
@@ -366,12 +366,6 @@ function writeCrashDump(reason, state, retries, writerFn, childInfo) {
         node_version: process.version, argv: process.argv.slice(2),
       },
     };
-    if (childInfo) {
-      dump.child = childInfo;
-      if (childInfo.exitCode !== undefined) {
-        w(`\x1b[31m  child exit: code=${childInfo.exitCode}${childInfo.signal ? ' signal='+childInfo.signal : ''} uptime=${childInfo.uptime_s}s rss=${childInfo.rss_mb}MB\x1b[0m\n`);
-      }
-    }
     try {
       const nhl = require('./nheap_limit');
       if (nhl.getStats) dump.nheap_limit = nhl.getStats();
@@ -1304,8 +1298,8 @@ function intercept() {
           origStderrWrite(`\x1b[33m[nproxy] stdin offload file: ${stdinController.tempFile} (${stdinController.bytesWritten}B written, ${stdinController.bytesReplayed}B replayed)\x1b[0m\n`);
         } catch (_) {}
       }
-      // Dump file for abnormal exits (preload mode only — CLI mode dumps from child.onExit/pts)
-      if (code !== 0 && code !== 130 && process.argv.indexOf('--pty') === -1 && !process.env.NPROXY_CLI_MODE) {
+      // Dump file for abnormal exits (skip signal-based exits like Ctrl+C/SIGINT=130)
+      if (code !== 0 && code !== 130) {
         try { writeCrashDump(`exit_${code}`, monitor ? monitor.state : 'unknown', emergencyRetries, origStderrWrite); } catch (_) {}
       }
     });
@@ -1344,7 +1338,6 @@ function intercept() {
 
 // ---- CLI Mode (spawn child) ----
 function runCLI() {
-  process.env.NPROXY_CLI_MODE = '1';
   const cli = parseArgs(process.argv.slice(2));
   if (cli.help || !cli.app) {
     const myself = process.argv[1];
@@ -1380,6 +1373,7 @@ Preload mode env vars:
 
   // Set process title to show the proxied app name (overrides intercept() fallback)
   const proxyAppName = cli.app ? require('path').basename(cli.app) : 'unknown';
+  process.title = `${proxyAppName} -via nproxy::monitoring`;
 
   // Banner injection (shared by stderr startup + stdout anchor modes)
   let cliBannerShown = false;
@@ -1447,17 +1441,8 @@ Preload mode env vars:
         origStdout.call(process.stdout, '\x1b[?1049l');  // alternate screen
       } catch (_) {}
       if (process.stdin.isTTY && process.stdin.setRawMode) process.stdin.setRawMode(false);
-      const childRss = child.rss ? (child.rss / 1024 / 1024).toFixed(1) : null;
-      const childUptime = child.uptime ? Math.round(child.uptime) : null;
-      const childInfo = { exitCode, parentPid: process.pid, uptime_s: childUptime || 0 };
-      if (signal) childInfo.signal = signal;
-      if (childRss) childInfo.rss_mb = +childRss;
-      if (child.command) childInfo.command = child.command;
-      if (child.args) childInfo.args = child.args.slice();
-      if (exitCode !== 0 && exitCode !== 130) {
-        try { writeCrashDump(`exit_${exitCode}`, 'monitoring', 0, null, childInfo); } catch (_) {}
-      }
       if (signal) {
+        // Exit with signal code directly — avoid re-signaling which can hang
         const sigNum = signal === 'SIGKILL' ? 9 : signal === 'SIGINT' ? 2 : signal === 'SIGTERM' ? 15 : 1;
         process.exit(128 + sigNum);
       }
@@ -1744,11 +1729,6 @@ Preload mode env vars:
 
     child.on('exit', (code, sig) => {
       if (process.stdin.isTTY && process.stdin.setRawMode) process.stdin.setRawMode(false);
-      const childInfo = { exitCode: code, command: cli.app, args: cli.args };
-      if (sig) childInfo.signal = sig;
-      if (code !== 0 && code !== 130) {
-        try { writeCrashDump(`exit_${code}`, childMonState || 'monitoring', 0, null, childInfo); } catch (_) {}
-      }
       if (sig) process.kill(process.pid, sig);
       else process.exit(code);
     });
@@ -1758,7 +1738,6 @@ Preload mode env vars:
   if (child && child.pid) {
     const appName = cli.app ? require('path').basename(cli.app) : 'unknown';
     process.stderr.write(`  \x1b[32;2m[nproxy]\x1b[0m child pid=${child.pid} app=${appName}\n`);
-    process.title = `${proxyAppName}(${child.pid}) -via nproxy`;
   }
 } // end runCLI
 
