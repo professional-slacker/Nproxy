@@ -53,7 +53,8 @@ NODE_BIN="$(command -v node)"
 # Auto-set max-old-space-size to 75% of total RAM (overridable via NODE_OPT_MAX_OLD env var)
 NODE_OPT_MAX_OLD="${NODE_OPT_MAX_OLD:-$("$NODE_BIN" -e "console.log(Math.floor(require('os').totalmem() / 1024 / 1024 * 0.75))" 2>/dev/null)}"
 : "${NODE_OPT_MAX_OLD:=2048}"
+
 # Ensure node-pty can be resolved from global modules
-NPM_GLOBAL_ROOT="$("$NODE_BIN" -e "console.log(require('module').GlobalPaths || require('path').resolve(process.execPath, '../lib/node_modules'))" 2>/dev/null || echo /usr/local/lib/node_modules)"
+NPM_GLOBAL_ROOT="$(npm root -g 2>/dev/null || echo /usr/local/lib/node_modules)"
 export NODE_PATH="${NODE_PATH:-$NPM_GLOBAL_ROOT}"
 exec "$NODE_BIN" --expose-gc "--max-old-space-size=${NODE_OPT_MAX_OLD}" "$SCRIPT_DIR/node/nproxy.js" "--text=$MODE" $PTY "${COMMAND_ARGS[@]}"
