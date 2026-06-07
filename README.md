@@ -166,9 +166,9 @@ NODE_OPT_MAX_OLD=4096                          # override heap limit for spawn m
 
 - `process.stdout.write` hook + memory monitoring with auto mode degradation
 - **256KB chunk splitting** — any write exceeding 256KB is split into `MAX_CHUNK_NORMAL` pieces
-- **5-stage memory guard**: monitoring → attention(256MB) → pressure(512MB) → critical(1024MB) → emergency(ヒープ上限の80%, デフォルト動的計算)
-  - emergency閾値は環境変数 `NPROXY_EMERGENCY_MB` で上書き可能
-  - `nproxy-run.sh` 使用時は起動時にNodeヒープ上限を動的取得し、その80%を自動設定
+- **5-stage memory guard**: monitoring → attention(256MB) → pressure(512MB) → critical(1024MB) → emergency (80% of heap limit, auto-calculated)
+  - Emergency threshold overridable via `NPROXY_EMERGENCY_MB` env var
+  - When using `nproxy-run.sh`, heap limit is auto-detected at startup and 80% is used as emergency threshold
   - 例: ヒープ上限2240MB → emergency 1792MB
   - pressure: auto-switch to strip-ansi, reduces chunk size to 64KB
   - critical: chunk size reduced to 4KB, near-emergency
