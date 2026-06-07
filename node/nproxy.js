@@ -329,10 +329,10 @@ class StdinFlowController {
 // Crash dump — written to cwd on abnormal exit (like a core file)
 // writerFn: optional stderr writer (exit handler passes origStderrWrite)
 // err: optional error object to include message/stack in dump
-function writeCrashDump(reason, state, retries, writerFn, err) {
+function writeCrashDump(reason, state, retries, writerFn, err, childInfo) {
   // Rate limiting to prevent infinite crash dump loops
   const isEmergency = state === 'emergency';
-  const rateLimitKey = `${reason}:${(err?.message || String(err || '')).slice(0, 100)}`;
+  const rateLimitKey = `${reason}:${(err?.message || String(err || childInfo?.exitCode || '')).slice(0, 100)}`;
   const now = Date.now();
   const tracker = _crashDumpTracker.get(rateLimitKey) || { count: 0, firstTime: now, lastTime: 0 };
   const limit = isEmergency ? RATE_LIMIT.emergency : RATE_LIMIT.normal;
@@ -396,6 +396,9 @@ function writeCrashDump(reason, state, retries, writerFn, err) {
         stack: err instanceof Error ? err.stack : undefined,
       };
     }
+    if (childInfo) {
+      dump.child = childInfo;
+    }
     try {
       const nhl = require('./nheap_limit');
       if (nhl.getStats) dump.nheap_limit = nhl.getStats();
@@ -403,7 +406,9 @@ function writeCrashDump(reason, state, retries, writerFn, err) {
     const ts = dump.timestamp.replace(/[:.]/g, '-');
     const prefix = isEmergency ? 'nproxy_emergency_' : 'nproxy_crash_';
     _crashDumpCounter++;
-    const filename = `${prefix}${ts}-${_crashDumpCounter}.json`;
+    const crashDir = require('path').join(require('os').tmpdir(), 'nproxy_crashes');
+    try { require('fs').mkdirSync(crashDir, { recursive: true }); } catch (_) {}
+    const filename = require('path').join(crashDir, `${prefix}${ts}-${_crashDumpCounter}.json`);
     require('fs').writeFileSync(filename, JSON.stringify(dump, null, 2));
     w(`\x1b[33m[nproxy] crash dump: ${filename}\x1b[0m\n`);
   } catch (e) {
@@ -1485,6 +1490,12 @@ Preload mode env vars:
         origStdout.call(process.stdout, '\x1b[?1049l');  // alternate screen
       } catch (_) {}
       if (process.stdin.isTTY && process.stdin.setRawMode) process.stdin.setRawMode(false);
+      if (exitCode !== 0 || signal) {
+        _childExitedAbnormally = true;
+        const childInfo = { exitCode, command: cli.app, args: cli.args };
+        if (signal) childInfo.signal = signal;
+        try { writeCrashDump('child_exit', 'monitoring', 0, null, childInfo); } catch (_) {}
+      }
       if (signal) {
         // Exit with signal code directly — avoid re-signaling which can hang
         const sigNum = signal === 'SIGKILL' ? 9 : signal === 'SIGINT' ? 2 : signal === 'SIGTERM' ? 15 : 1;
@@ -1773,11 +1784,11 @@ Preload mode env vars:
 
     child.on('exit', (code, sig) => {
       if (process.stdin.isTTY && process.stdin.setRawMode) process.stdin.setRawMode(false);
-      const exitInfo = sig ? `signal ${sig}` : `code ${code}`;
       if (code !== 0 || sig) {
         _childExitedAbnormally = true;
-        process.stderr.write(`\x1b[31;1m[nproxy] child process ${child.pid} exited abnormally: ${exitInfo}\x1b[0m\n`);
-        process.stderr.write(`\x1b[33m[nproxy] check child crash dump: nproxy_crash_*.json / nproxy_emergency_*.json in ${process.cwd()}\x1b[0m\n`);
+        const childInfo = { exitCode: code, command: cli.app, args: cli.args };
+        if (sig) childInfo.signal = sig;
+        try { writeCrashDump('child_exit', childMonState || 'monitoring', 0, null, childInfo); } catch (_) {}
       }
       if (sig) process.kill(process.pid, sig);
       else process.exit(code);
