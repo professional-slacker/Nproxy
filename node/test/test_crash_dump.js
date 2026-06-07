@@ -1,9 +1,9 @@
-const { describe, it, before, after } = require('node:test');
+const { describe, it, before, after, afterEach } = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
 process.env.NPROXY_AUTO = '1'; // Prevent intercept() on require
-const { writeCrashDump } = require('../nproxy.js');
+const { writeCrashDump, _crashDumpTracker, RATE_LIMIT } = require('../nproxy.js');
 
 describe('writeCrashDump', () => {
   const cwd = process.cwd();
@@ -15,11 +15,16 @@ describe('writeCrashDump', () => {
     }
   });
 
+  // Reset rate limiter between tests
+  afterEach(() => {
+    _crashDumpTracker.clear();
+  });
+
   it('writes a crash dump file with JSON content', () => {
     const w = (msg) => {}; // silent writer
     writeCrashDump('test_reason', 'monitoring', 0, w);
 
-    // Find the dump file
+    // Find the dump file (newest)
     const files = fs.readdirSync(cwd).filter(f => f.startsWith('nproxy_crash_'));
     assert.ok(files.length > 0, 'crash dump file should exist');
     const dumpFile = path.join(cwd, files[files.length - 1]);
@@ -42,7 +47,9 @@ describe('writeCrashDump', () => {
     const w = (msg) => {};
     writeCrashDump('emergency_no_recovery', 'emergency', 25, w);
 
-    const files = fs.readdirSync(cwd).filter(f => f.startsWith('nproxy_crash_'));
+    // Find the emergency dump file (different prefix)
+    const files = fs.readdirSync(cwd).filter(f => f.startsWith('nproxy_emergency_'));
+    assert.ok(files.length > 0, 'emergency crash dump file should exist');
     const dumpFile = path.join(cwd, files[files.length - 1]);
     dumpFiles.push(dumpFile);
 
@@ -68,5 +75,40 @@ describe('writeCrashDump', () => {
     writeCrashDump('no_writer', 'monitoring', 0, null);
     // Should not throw when writer is undefined
     writeCrashDump('undefined_writer', 'monitoring', 0, undefined);
+  });
+
+  it('rate limits repeated dumps with same reason', () => {
+    const w = (msg) => {};
+    const beforeCount = fs.readdirSync(cwd).filter(f => f.startsWith('nproxy_crash_')).length;
+    
+    // Write up to maxCount
+    for (let i = 0; i < RATE_LIMIT.normal.maxCount; i++) {
+      writeCrashDump('rate_limit_test', 'monitoring', 0, w);
+    }
+    const afterCount = fs.readdirSync(cwd).filter(f => f.startsWith('nproxy_crash_')).length;
+    assert.strictEqual(afterCount - beforeCount, RATE_LIMIT.normal.maxCount);
+
+    // Next write should be rate limited (no new file)
+    writeCrashDump('rate_limit_test', 'monitoring', 0, w);
+    const finalCount = fs.readdirSync(cwd).filter(f => f.startsWith('nproxy_crash_')).length;
+    assert.strictEqual(finalCount, afterCount, 'should not create more files after rate limit');
+  });
+
+  it('includes error message and stack in dump', () => {
+    const w = (msg) => {};
+    const beforeCount = fs.readdirSync(cwd).filter(f => f.startsWith('nproxy_crash_')).length;
+    
+    const testError = new Error('test error message');
+    testError.stack = 'Error: test error message\n    at test.js:1:1';
+    writeCrashDump('error_test', 'monitoring', 0, w, testError);
+
+    const afterCount = fs.readdirSync(cwd).filter(f => f.startsWith('nproxy_crash_')).length;
+    assert.strictEqual(afterCount - beforeCount, 1, 'should create one dump file');
+    
+    const files = fs.readdirSync(cwd).filter(f => f.startsWith('nproxy_crash_'));
+    const content = JSON.parse(fs.readFileSync(path.join(cwd, files[files.length - 1]), 'utf8'));
+    assert.ok(content.error);
+    assert.strictEqual(content.error.message, 'test error message');
+    assert.ok(content.error.stack.includes('test error message'));
   });
 });
