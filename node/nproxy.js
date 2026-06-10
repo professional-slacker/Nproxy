@@ -843,7 +843,7 @@ function intercept() {
   };
 
   // Memory monitor — on pressure, reduce chunk size to limit V8 Segmenter load
-  const memLogSec = parseInt(process.env.NPROXY_MEMLOG || '0', 10);
+  const memLogSec = parseInt(process.env.NPROXY_MEM_LOG_INTERVAL || '0', 10);
   let memLogTimer = null;
   const memLogInterval = memLogSec > 0 ? memLogSec * 1000 : 0;
 
@@ -993,7 +993,7 @@ function intercept() {
     process.stderr.write(`${YELLOW}[nproxy]${RESET} --expose-gc not set. Emergency GC will be no-op. Add --expose-gc to node flags.\n`);
   }
 
-  // Periodic memory log (NPROXY_MEMLOG=60 for every 60s)
+  // Periodic memory log (NPROXY_MEM_LOG_INTERVAL=60 for every 60s)
   if (memLogInterval > 0) {
     function logMem() {
       const m = process.memoryUsage();
@@ -1066,9 +1066,12 @@ function intercept() {
           origStderrWrite(`\x1b[33;1m  ⚠ RSS >> heap: possible native memory leak (nheap_limit, node-pty, Buffer)\x1b[0m\n`);
         }
       } catch (_) { /* stream may be closed */ }
-      // Dump file for abnormal exits (skip signal-based exits like Ctrl+C/SIGINT=130)
+      // Dump file for abnormal exits (skip signal-based exits like Ctrl+C/SIGINT)
+      // Signal exit codes (128 + signal): 129=SIGHUP, 130=SIGINT, 143=SIGTERM
+      // Also skip raw signal numbers (1,2,15) and shell convention 130
       // Also skip if child process caused the abnormal exit (child already wrote its own dump)
-      if (code !== 0 && code !== 130 && !_childExitedAbnormally) {
+      const signalExits = new Set([1, 2, 15, 129, 130, 143]); // signal numbers + 128+signal
+      if (code !== 0 && !signalExits.has(code) && !_childExitedAbnormally) {
         try { writeCrashDump(`exit_${code}`, monitor ? monitor.state : 'unknown', emergencyRetries, origStderrWrite); } catch (_) {}
       }
     });
@@ -1435,7 +1438,7 @@ Preload mode env vars:
           }
         }
         childMonStatePrev = state;
-        if (process.env.NPROXY_MEMLOG) {
+        if (process.env.NPROXY_MEM_LOG_INTERVAL) {
           process.stderr.write(`[nproxy] childRSS=${childMon.rssMb}MB heap=${heapMb}MB state=${state}\n`);
         }
       },

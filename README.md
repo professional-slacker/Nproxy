@@ -159,7 +159,7 @@ node -r ./node/nproxy.js my-app.js
   - `split` — rss + heapUsed dual monitoring + SlicedString detach (V8 issue2869)
   - `array` — rss + split features + Array proxy for push/unshift/splice
 - `NPROXY_DEBUG` — enable chunk split / debug logs (default: off)
-- `NPROXY_MEMLOG` — periodic memory log in seconds (default: 0=OFF)
+- `NPROXY_MEM_LOG_INTERVAL` — periodic memory log in seconds (default: 0=OFF)
 - `NPROXY_EMERGENCY_MB` — override emergency threshold (default: 80% of heap limit)
 - `NODE_OPT_MAX_OLD` — override heap limit for spawn mode (default: auto-detected)
 ```
